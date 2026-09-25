@@ -64,6 +64,9 @@ def init_db():
             username TEXT,
             first_name TEXT,
             balance REAL NOT NULL DEFAULT 0,
+            referral_earnings REAL NOT NULL DEFAULT 0,
+            daily_bonus_earnings REAL NOT NULL DEFAULT 0,
+            task_earnings REAL NOT NULL DEFAULT 0,
             verified INTEGER NOT NULL DEFAULT 0,
             banned INTEGER NOT NULL DEFAULT 0,
             referred_by INTEGER,
@@ -124,21 +127,29 @@ def init_db():
             name TEXT NOT NULL,
             url TEXT NOT NULL,
             active INTEGER NOT NULL DEFAULT 1,
-            created_at INTEGER NOT NULL,
-            updated_at INTEGER NOT NULL
-        );
-
-        CREATE TABLE IF NOT EXISTS captcha_sessions (
-            nonce TEXT PRIMARY KEY,
-            user_id INTEGER NOT NULL,
-            answer INTEGER NOT NULL,
-            expires_at INTEGER NOT NULL,
-            used INTEGER NOT NULL DEFAULT 0
+            created_at INTEGER NOT NULL
         );
 
         CREATE INDEX IF NOT EXISTS idx_withdrawals_status ON withdrawals(status);
         CREATE INDEX IF NOT EXISTS idx_submissions_task_user ON task_submissions(task_id, user_id);
         """)
+        # Safe migrations for existing Falcon World databases.
+        existing = {r[1] for r in conn.execute("PRAGMA table_info(users)").fetchall()}
+        for col, definition in {
+            "referral_earnings": "REAL NOT NULL DEFAULT 0",
+            "daily_bonus_earnings": "REAL NOT NULL DEFAULT 0",
+            "task_earnings": "REAL NOT NULL DEFAULT 0",
+        }.items():
+            if col not in existing:
+                conn.execute(f"ALTER TABLE users ADD COLUMN {col} {definition}")
+
+        if conn.execute("SELECT COUNT(*) c FROM required_channels").fetchone()["c"] == 0:
+            now_seed = int(time.time())
+            conn.executemany(
+                "INSERT OR IGNORE INTO required_channels(username,name,url,active,created_at) VALUES(?,?,?,?,?)",
+                [(c["username"], c["name"], c["url"], 1, now_seed) for c in REQUIRED_CHANNELS],
+            )
+
         defaults = {
             "daily_bonus": DEFAULT_DAILY_BONUS,
             "referral_reward": DEFAULT_REFERRAL_REWARD,
@@ -148,21 +159,6 @@ def init_db():
             conn.execute(
                 "INSERT OR IGNORE INTO settings(key,value) VALUES(?,?)",
                 (key, str(value)),
-            )
-        channel_count = conn.execute("SELECT COUNT(*) c FROM required_channels").fetchone()["c"]
-        if channel_count == 0:
-            defaults_channels = [
-                ("@Sheger_tech1", "Sheger Tech", "https://t.me/Sheger_tech1"),
-                ("@EthioVortex1", "Ethio Vortex", "https://t.me/EthioVortex1"),
-                ("@ethiocashflow", "Ethio Cash Flow", "https://t.me/ethiocashflow"),
-                ("@AmanIncomeLab", "Aman Income Lab", "https://t.me/AmanIncomeLab"),
-                ("@OnlineIncomeHub07", "Online Income Hub", "https://t.me/OnlineIncomeHub07"),
-                ("@Paymentprooff2", "Payment Proof", "https://t.me/Paymentprooff2"),
-            ]
-            now = int(time.time())
-            conn.executemany(
-                "INSERT INTO required_channels(username,name,url,active,created_at,updated_at) VALUES(?,?,?,?,?,?)",
-                [(u,n,url,1,now,now) for u,n,url in defaults_channels],
             )
         conn.commit()
     finally:
@@ -194,88 +190,6 @@ def set_setting(key: str, value):
             (key, str(value)),
         )
         conn.commit()
-    finally:
-        conn.close()
-
-
-def get_required_channels():
-    conn = db()
-    try:
-        rows = conn.execute("SELECT username,name,url FROM required_channels WHERE active=1 ORDER BY id ASC").fetchall()
-        if rows:
-            return [dict(r) for r in rows]
-        return []
-    finally:
-        conn.close()
-
-
-def admin_add_channel(username, name, url):
-    username = username.strip()
-    if username and not username.startswith("@"):
-        username = "@" + username
-    if not re.fullmatch(r"@[A-Za-z0-9_]{5,32}", username):
-        return False, "Invalid channel username."
-    if not url.startswith("https://t.me/"):
-        url = f"https://t.me/{username.lstrip('@')}"
-    now = int(time.time())
-    conn = db()
-    try:
-        conn.execute("INSERT INTO required_channels(username,name,url,active,created_at,updated_at) VALUES(?,?,?,?,?,?)", (username,name.strip() or username,url,1,now,now))
-        conn.commit()
-        return True, "Channel added."
-    except sqlite3.IntegrityError:
-        conn.execute("UPDATE required_channels SET name=?,url=?,active=1,updated_at=? WHERE username=?", (name.strip() or username,url,now,username))
-        conn.commit()
-        return True, "Channel updated and enabled."
-    finally:
-        conn.close()
-
-
-def admin_remove_channel(username):
-    username = username.strip()
-    if username and not username.startswith("@"):
-        username = "@" + username
-    conn = db()
-    try:
-        cur = conn.execute("UPDATE required_channels SET active=0,updated_at=? WHERE username=?", (int(time.time()),username))
-        conn.commit()
-        return cur.rowcount > 0
-    finally:
-        conn.close()
-
-
-def create_captcha(user_id):
-    import secrets
-    a = secrets.randbelow(40) + 10
-    b = secrets.randbelow(40) + 10
-    nonce = secrets.token_urlsafe(18)
-    conn = db()
-    try:
-        now = int(time.time())
-        conn.execute("DELETE FROM captcha_sessions WHERE expires_at<? OR used=1", (now,))
-        conn.execute("INSERT INTO captcha_sessions(nonce,user_id,answer,expires_at,used) VALUES(?,?,?,?,0)", (nonce,user_id,a+b,now+300))
-        conn.commit()
-        return nonce, a, b
-    finally:
-        conn.close()
-
-
-def verify_captcha(user_id, nonce, answer):
-    conn = db()
-    try:
-        now = int(time.time())
-        row = conn.execute("SELECT answer,expires_at,used FROM captcha_sessions WHERE nonce=? AND user_id=?", (nonce,user_id)).fetchone()
-        if not row or row["used"] or int(row["expires_at"]) < now:
-            return False, "Captcha expired. Please request a new one."
-        try:
-            ok = int(answer) == int(row["answer"])
-        except Exception:
-            ok = False
-        if not ok:
-            return False, "Incorrect answer, please try again."
-        conn.execute("UPDATE captcha_sessions SET used=1 WHERE nonce=?", (nonce,))
-        conn.commit()
-        return True, "Verified"
     finally:
         conn.close()
 
@@ -389,8 +303,19 @@ def get_referral_count(user_id: int) -> int:
         conn.close()
 
 
+def _local_gregorian_date(ts: int | None = None):
+    from datetime import datetime
+    try:
+        from zoneinfo import ZoneInfo
+        tz = ZoneInfo("Africa/Addis_Ababa")
+        return datetime.fromtimestamp(ts or time.time(), tz).date()
+    except Exception:
+        return datetime.utcfromtimestamp(ts or time.time()).date()
+
+
 def claim_daily_bonus(user_id: int):
     now = int(time.time())
+    today = _local_gregorian_date(now)
     reward = float(get_setting("daily_bonus", DEFAULT_DAILY_BONUS))
     conn = db()
     try:
@@ -408,22 +333,23 @@ def claim_daily_bonus(user_id: int):
         if not row["verified"]:
             conn.rollback()
             return False, {"error": "not_verified"}
-        remaining = 86400 - (now - int(row["daily_last_claim"] or 0))
-        if remaining > 0:
+        last = int(row["daily_last_claim"] or 0)
+        if last and _local_gregorian_date(last) == today:
             conn.rollback()
-            return False, {"error": "cooldown", "remaining": remaining}
+            return False, {"error": "already_claimed", "date": str(today)}
         conn.execute(
-            "UPDATE users SET balance=ROUND(balance+?,8),daily_last_claim=?,updated_at=? WHERE user_id=?",
-            (reward, now, now, user_id),
+            "UPDATE users SET balance=ROUND(balance+?,8),daily_bonus_earnings=ROUND(daily_bonus_earnings+?,8),daily_last_claim=?,updated_at=? WHERE user_id=?",
+            (reward, reward, now, now, user_id),
         )
         conn.commit()
-        return True, {"reward": reward, "balance": float(row["balance"]) + reward}
+        from datetime import timedelta
+        return True, {"reward": reward, "balance": float(row["balance"]) + reward,
+                      "date": str(today), "next_date": str(today + timedelta(days=1))}
     except Exception:
         conn.rollback()
         raise
     finally:
         conn.close()
-
 
 def reward_referrer_after_verification(user_id: int):
     conn = db()
@@ -457,8 +383,8 @@ def reward_referrer_after_verification(user_id: int):
         reward = float(get_setting("referral_reward", DEFAULT_REFERRAL_REWARD))
         now = int(time.time())
         conn.execute(
-            "UPDATE users SET balance=ROUND(balance+?,8),updated_at=? WHERE user_id=?",
-            (reward, now, referrer_id),
+            "UPDATE users SET balance=ROUND(balance+?,8),referral_earnings=ROUND(referral_earnings+?,8),updated_at=? WHERE user_id=?",
+            (reward, reward, now, referrer_id),
         )
         conn.execute(
             "UPDATE users SET referral_reward_paid=1,updated_at=? WHERE user_id=?",
@@ -505,18 +431,13 @@ def save_wallet(user_id: int, wallet_type: str, wallet_number: str):
                WHERE user_id=?""",
             (normalized, wallet_number, 1 if suspicious else 0, int(time.time()), user_id),
         )
-        if duplicate:
-            conn.execute(
-                "UPDATE users SET wallet_suspicious=1,updated_at=? WHERE user_id=?",
-                (int(time.time()), int(duplicate["user_id"])),
-            )
         conn.commit()
         return True, "Wallet saved successfully.", suspicious
     finally:
         conn.close()
 
 
-def create_withdrawal(user_id: int, requested_amount: float):
+def create_withdrawal(user_id: int, requested_amount=None):
     conn = db()
     try:
         conn.execute("BEGIN IMMEDIATE")
@@ -534,15 +455,12 @@ def create_withdrawal(user_id: int, requested_amount: float):
             conn.rollback()
             return False, "Please save your wallet first."
         minimum = float(get_setting("min_withdraw", DEFAULT_MIN_WITHDRAW))
-        try:
-            amount = round(float(requested_amount), 2)
-        except Exception:
-            conn.rollback()
-            return False, "Invalid withdrawal amount."
+        available = float(user["balance"])
+        amount = available if requested_amount in (None, "", 0) else float(requested_amount)
         if amount < minimum:
             conn.rollback()
             return False, f"Minimum withdrawal is {minimum:.2f} ETB."
-        if amount > float(user["balance"]):
+        if amount > available:
             conn.rollback()
             return False, "Insufficient balance."
         pending = conn.execute(
@@ -673,6 +591,8 @@ def withdrawal_keyboard(withdrawal_id: int):
             {"text": "❌ Reject", "callback_data": f"wd_reject:{withdrawal_id}"},
         ], [
             {"text": "🚫 Ban User", "callback_data": f"wd_ban:{withdrawal_id}"}
+        ], [
+            {"text": "👥 Referral List", "callback_data": f"wd_refs:{withdrawal_id}"}
         ]]
     }
 
@@ -708,10 +628,8 @@ async def notify_withdrawal(wid: int):
     text = (
         "💸 <b>New Withdrawal</b>\n\n"
         f"🆔 ID: <code>{row['id']}</code>\n"
-        f"👤 Full Name: <b>{html.escape(row['first_name'] or 'Unknown')}</b>\n"
-        f"🔖 Username: <b>@{html.escape(row['username'])}</b>\n" if row['username'] else f"👤 Full Name: <b>{html.escape(row['first_name'] or 'Unknown')}</b>\n🔖 Username: <b>None</b>\n"
-        f"🆔 Telegram ID: <code>{row['user_id']}</code>\n"
-        f"💰 Withdrawal Amount: <b>{row['amount']:.2f} ETB</b>\n"
+        f"👤 {format_user(row)}\n"
+        f"💰 Amount: <b>{row['amount']:.2f} ETB</b>\n"
         f"🏦 Wallet: <b>{html.escape(row['wallet_type'])}</b>\n"
         f"📱 Number: <code>{html.escape(row['wallet_number'])}</code>\n"
         f"⚠️ Suspicious: {'YES' if row['suspicious'] else 'No'}"
@@ -837,6 +755,27 @@ async def handle_admin_callback(query, data):
             conn.close()
         return
 
+    if data.startswith("wd_refs:"):
+        wid = int(data.split(":", 1)[1])
+        conn = db()
+        try:
+            row = conn.execute("SELECT user_id FROM withdrawals WHERE id=?", (wid,)).fetchone()
+            if not row:
+                await answer_callback(query["id"], "Withdrawal not found.", True); return
+            refs = conn.execute("SELECT user_id,username,first_name,verified FROM users WHERE referred_by=? ORDER BY user_id DESC", (row["user_id"],)).fetchall()
+        finally:
+            conn.close()
+        if not refs:
+            await answer_callback(query["id"], "No referrals found.", True); return
+        lines=["👥 <b>Referral List</b>"]
+        for r in refs:
+            name=html.escape(r["first_name"] or r["username"] or str(r["user_id"]))
+            uname=f"@{html.escape(r['username'])}" if r["username"] else "No username"
+            lines.append(f"• {name} ({uname}) — <code>{r['user_id']}</code> — {'Verified' if r['verified'] else 'Unverified'}")
+        await send_message(admin_id, "\n".join(lines))
+        await answer_callback(query["id"], "Referral list sent.")
+        return
+
     if data.startswith("task_"):
         action, raw_id = data.split(":", 1)
         sid = int(raw_id)
@@ -864,8 +803,8 @@ async def handle_admin_callback(query, data):
                     (now, admin_id, sid),
                 )
                 conn.execute(
-                    "UPDATE users SET balance=ROUND(balance+?,8),updated_at=? WHERE user_id=?",
-                    (row["reward"], now, row["user_id"]),
+                    "UPDATE users SET balance=ROUND(balance+?,8),task_earnings=ROUND(task_earnings+?,8),updated_at=? WHERE user_id=?",
+                    (row["reward"], row["reward"], now, row["user_id"]),
                 )
                 status_text = "approved"
             elif action == "task_reject":
@@ -921,15 +860,7 @@ def parse_start_ref(text: str):
 
 
 def main_keyboard():
-    return {
-        "keyboard": [
-            [{"text": "💰 Balance"}, {"text": "👥 Referral"}],
-            [{"text": "🎁 Daily Bonus"}, {"text": "💳 Wallet"}],
-            [{"text": "📋 Tasks"}, {"text": "💸 Withdraw"}],
-            [{"text": "🆘 Support"}],
-        ],
-        "resize_keyboard": True,
-    }
+    return {"inline_keyboard": [[{"text": "🚀 Open Falcon World", "web_app": {"url": MINI_APP_URL}}]]}
 
 
 async def handle_message(message):
@@ -968,6 +899,15 @@ async def handle_message(message):
         )
         return
 
+    # User features live inside the Mini App. Keep normal bot chat focused on launching it.
+    if not is_admin(user_id) and not text.startswith("/"):
+        await send_message(
+            chat_id,
+            "🦅 <b>Falcon World</b>\n\nOpen the Mini App to access your balance, referrals, bonuses, wallet, tasks and withdrawals.",
+            main_keyboard(),
+        )
+        return
+
     if text == "💰 Balance":
         row = get_user(user_id)
         await send_message(chat_id, f"💰 <b>Your Balance</b>\n\n<b>{row['balance']:.2f} ETB</b>", main_keyboard())
@@ -991,13 +931,13 @@ async def handle_message(message):
             await send_message(chat_id, "❌ Daily bonus could not be claimed.", main_keyboard())
         return
 
-    if text == "👥 Referral":
+    if text == "👥 Invite Friends":
         link = f"https://t.me/{BOT_USERNAME}?start=ref_{user_id}"
         count = get_referral_count(user_id)
         reward = get_setting("referral_reward", DEFAULT_REFERRAL_REWARD)
         await send_message(
             chat_id,
-            f"👥 <b>Referral</b>\n\n"
+            f"👥 <b>Invite Friends</b>\n\n"
             f"Invite link:\n<code>{html.escape(link)}</code>\n\n"
             f"👤 Successful referrals: <b>{count}</b>\n"
             f"💰 Reward: <b>{reward:.2f} ETB</b> each\n\n"
@@ -1006,7 +946,7 @@ async def handle_message(message):
         )
         return
 
-    if text == "💳 Wallet":
+    if text == "💳 Wallet Settings":
         row = get_user(user_id)
         wallet = "Not set"
         if row["wallet_type"] and row["wallet_number"]:
@@ -1046,6 +986,20 @@ async def handle_message(message):
             )
         lines.append("\n🚀 Open the Mini App to complete and submit tasks.")
         await send_message(chat_id, "\n\n".join(lines), main_keyboard())
+        return
+
+    if text == "❓ Help":
+        await send_message(
+            chat_id,
+            "❓ <b>Help</b>\n\n"
+            "1. Join all required channels.\n"
+            "2. Verify your account.\n"
+            "3. Complete tasks and daily bonus.\n"
+            "4. Save CBE or Telebirr.\n"
+            "5. Withdraw when you reach the minimum.\n\n"
+            "Use /start to open Falcon World.",
+            main_keyboard(),
+        )
         return
 
     if text == "🆘 Support":
@@ -1149,24 +1103,61 @@ async def handle_message(message):
         if not channels:
             await send_message(chat_id, "No required channels configured.")
         else:
-            lines = [f"{i+1}. {html.escape(c['name'])} — <code>{html.escape(c['username'])}</code>" for i,c in enumerate(channels)]
-            await send_message(chat_id, "📢 <b>Required Channels</b>\n\n" + "\n".join(lines) + "\n\nAdd: /addchannel @username | Name | https://t.me/username\nRemove: /removechannel @username")
+            lines = ["📣 <b>Required Channels</b>"]
+            for i, c in enumerate(channels, 1):
+                lines.append(f"{i}. <b>{html.escape(c['name'])}</b> — {html.escape(c['username'])}\n{html.escape(c['url'])}")
+            lines.append("\n/addchannel @username | Name | https://t.me/username\n/removechannel @username\n/editchannel @old | @new | Name | https://t.me/new")
+            await send_message(chat_id, "\n\n".join(lines))
         return
 
     if text.startswith("/addchannel ") and is_admin(user_id):
-        parts = [x.strip() for x in text.split("|",2)]
-        if len(parts) < 2:
-            await send_message(chat_id, "Usage: /addchannel @username | Channel Name | https://t.me/username")
+        parts = [x.strip() for x in text.split("|", 2)]
+        if len(parts) != 3:
+            await send_message(chat_id, "Usage: /addchannel @username | Name | https://t.me/username")
             return
-        username, name = parts[0], parts[1]
-        url = parts[2] if len(parts) > 2 else ""
-        ok, msg = admin_add_channel(username,name,url)
-        await send_message(chat_id, ("✅ " if ok else "❌ ") + msg)
+        username, name, url = parts
+        if not username.startswith("@"):
+            username = "@" + username
+        conn = db()
+        try:
+            conn.execute("INSERT INTO required_channels(username,name,url,active,created_at) VALUES(?,?,?,?,?)", (username,name,url,1,int(time.time())))
+            conn.commit()
+        except sqlite3.IntegrityError:
+            await send_message(chat_id, "❌ That channel is already configured.")
+            return
+        finally:
+            conn.close()
+        await send_message(chat_id, f"✅ Channel added: {html.escape(username)}")
         return
 
     if text.startswith("/removechannel ") and is_admin(user_id):
-        ok = admin_remove_channel(text.split(maxsplit=1)[1]) if len(text.split(maxsplit=1)) > 1 else False
-        await send_message(chat_id, "✅ Channel removed from required list." if ok else "❌ Channel not found.")
+        username = text.split(maxsplit=1)[1].strip()
+        if not username.startswith("@"):
+            username = "@" + username
+        conn = db()
+        try:
+            cur = conn.execute("DELETE FROM required_channels WHERE username=?", (username,))
+            conn.commit()
+        finally:
+            conn.close()
+        await send_message(chat_id, "✅ Channel removed." if cur.rowcount else "❌ Channel not found.")
+        return
+
+    if text.startswith("/editchannel ") and is_admin(user_id):
+        parts = [x.strip() for x in text.split("|", 3)]
+        if len(parts) != 4:
+            await send_message(chat_id, "Usage: /editchannel @old | @new | Name | https://t.me/new")
+            return
+        old, new, name, url = parts
+        if not old.startswith("@"): old = "@" + old
+        if not new.startswith("@"): new = "@" + new
+        conn = db()
+        try:
+            cur = conn.execute("UPDATE required_channels SET username=?,name=?,url=? WHERE username=?", (new,name,url,old))
+            conn.commit()
+        finally:
+            conn.close()
+        await send_message(chat_id, "✅ Channel updated." if cur.rowcount else "❌ Channel not found.")
         return
 
     if text.startswith("/addtask ") and is_admin(user_id):
@@ -1229,10 +1220,7 @@ async def admin_dashboard(chat_id):
         "/addtask TITLE|DESCRIPTION|REWARD|URL\n"
         "/setminwithdraw AMOUNT\n"
         "/setdaily AMOUNT\n"
-        "/setref AMOUNT\n"
-        "/channels\n"
-        "/addchannel @username | Name | https://t.me/username\n"
-        "/removechannel @username",
+        "/setref AMOUNT",
     )
 
 
@@ -1302,6 +1290,15 @@ def validate_init_data(init_data: str):
         return None
 
 
+def get_required_channels():
+    conn = db()
+    try:
+        rows = conn.execute("SELECT username,name,url FROM required_channels WHERE active=1 ORDER BY id ASC").fetchall()
+        return [dict(r) for r in rows]
+    finally:
+        conn.close()
+
+
 async def check_channel_membership(user_id: int, channel_username: str):
     result = await telegram_request(
         "getChatMember",
@@ -1324,14 +1321,23 @@ async def check_channel_membership(user_id: int, channel_username: str):
 
 
 async def check_all_channels(user_id: int):
-    channels = get_required_channels()
     async def check(channel):
-        joined = await check_channel_membership(user_id, channel["username"])
+        joined = await check_channel_membership(
+            user_id,
+            channel["username"],
+        )
         return {**channel, "joined": joined}
-    results = await asyncio.gather(*(check(ch) for ch in channels)) if channels else []
+
+    channels = get_required_channels()
+    results = await asyncio.gather(*(check(ch) for ch in channels))
     verified_count = sum(1 for channel in results if channel["joined"])
-    verified = bool(channels) and verified_count == len(channels)
-    return {"verified": verified, "verified_count": verified_count, "total": len(channels), "channels": results}
+    verified = verified_count == len(channels)
+    return {
+        "verified": verified,
+        "verified_count": verified_count,
+        "total": len(channels),
+        "channels": results,
+    }
 
 
 async def require_user(request: Request):
@@ -1373,602 +1379,121 @@ async def health():
 
 @app.get("/app", response_class=HTMLResponse)
 async def mini_app():
-    html = r"""<!DOCTYPE html>
+    html = r"""<!doctype html>
 <html lang="en">
 <head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width,initial-scale=1.0,maximum-scale=1.0,user-scalable=no">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
+<meta name="theme-color" content="#07101f">
 <title>Falcon World</title>
 <script src="https://telegram.org/js/telegram-web-app.js"></script>
 <style>
-*{box-sizing:border-box}
-body{
-margin:0;
-font-family:Arial,sans-serif;
-background:#07152e;
-color:#fff;
-min-height:100vh;
-}
-button{
-font-family:inherit;
-cursor:pointer;
-}
-.container{
-max-width:520px;
-margin:auto;
-padding:18px;
-}
-.loading{
-position:fixed;
-inset:0;
-background:#07152e;
-display:flex;
-flex-direction:column;
-justify-content:center;
-align-items:center;
-z-index:20;
-}
-.logo{
-font-size:72px;
-margin-bottom:12px;
-}
-.loading h1{
-margin:0;
-font-size:28px;
-}
-.loading p{
-opacity:.7;
-margin:8px 0 20px;
-}
-.progress{
-width:75%;
-height:8px;
-background:#172b4f;
-border-radius:20px;
-overflow:hidden;
-}
-.progress span{
-display:block;
-height:100%;
-width:0;
-background:#2f8cff;
-transition:.15s;
-}
-.header{
-display:flex;
-align-items:center;
-justify-content:space-between;
-margin-bottom:18px;
-}
-.brand{
-font-size:24px;
-font-weight:800;
-}
-.status{
-font-size:12px;
-padding:7px 10px;
-border-radius:15px;
-background:#12335f;
-}
-.card{
-background:#0e2244;
-border:1px solid #19375f;
-border-radius:20px;
-padding:18px;
-margin-bottom:14px;
-box-shadow:0 8px 25px rgba(0,0,0,.15);
-}
-.balance{
-font-size:34px;
-font-weight:800;
-margin-top:8px;
-}
-.muted{
-color:#91a5c4;
-font-size:13px;
-}
-.verify-title{
-font-size:20px;
-font-weight:800;
-margin-bottom:8px;
-}
-.channel{
-display:flex;
-align-items:center;
-justify-content:space-between;
-gap:10px;
-background:#0a1b37;
-border:1px solid #18365e;
-border-radius:14px;
-padding:12px;
-margin:8px 0;
-}
-.channel-name{
-font-weight:700;
-font-size:14px;
-}
-.channel small{
-display:block;
-color:#7f95b6;
-margin-top:3px;
-}
-.join{
-border:0;
-background:#2388ff;
-color:#fff;
-padding:9px 13px;
-border-radius:10px;
-font-weight:700;
-}
-.joined{
-background:#123e2b;
-color:#62e69b;
-padding:9px 11px;
-border-radius:10px;
-font-weight:700;
-}
-.primary{
-width:100%;
-border:0;
-padding:14px;
-border-radius:14px;
-background:#2388ff;
-color:#fff;
-font-size:16px;
-font-weight:800;
-margin-top:12px;
-}
-.secondary{
-width:100%;
-border:1px solid #284c79;
-padding:13px;
-border-radius:14px;
-background:#0c1d39;
-color:#fff;
-font-size:15px;
-font-weight:700;
-margin-top:9px;
-}
-.grid{
-display:grid;
-grid-template-columns:1fr 1fr;
-gap:10px;
-}
-.action{
-border:1px solid #1b3c68;
-background:#0d2142;
-color:#fff;
-padding:16px 10px;
-border-radius:16px;
-font-weight:800;
-font-size:14px;
-min-height:72px;
-}
-.section{
-display:none;
-}
-.section.active{
-display:block;
-}
-input,textarea,select{
-width:100%;
-background:#081a35;
-border:1px solid #24476f;
-color:#fff;
-border-radius:12px;
-padding:13px;
-margin-top:8px;
-outline:none;
-}
-textarea{
-min-height:110px;
-resize:vertical;
-}
-.task{
-background:#0a1b37;
-border:1px solid #18375f;
-padding:14px;
-border-radius:14px;
-margin:9px 0;
-}
-.task h3{
-margin:0 0 7px;
-font-size:16px;
-}
-.task p{
-margin:0 0 8px;
-color:#9db0cc;
-font-size:13px;
-line-height:1.4;
-}
-.task a{
-color:#53a2ff;
-}
-.hidden{display:none!important}
-.center{text-align:center}
-.small{font-size:12px}
-.warning{
-background:#392d0c;
-border:1px solid #6e5b1e;
-color:#f5d77c;
-padding:12px;
-border-radius:12px;
-margin-top:10px;
-font-size:13px;
-}
-.success{
-background:#0d3927;
-border:1px solid #1f704e;
-color:#72efaa;
-padding:12px;
-border-radius:12px;
-margin-top:10px;
-font-size:13px;
-}
+:root{--bg:#050a13;--panel:#0b1423;--panel2:#101d30;--line:rgba(255,255,255,.09);--text:#f6f8fb;--muted:#8fa1b8;--accent:#4da3ff;--accent2:#7b61ff;--good:#45e39b;--warn:#ffcc66;--danger:#ff6b7a;--r:22px}
+*{box-sizing:border-box}html,body{margin:0;background:var(--bg);color:var(--text);font-family:Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;-webkit-font-smoothing:antialiased}body{min-height:100vh;overflow-x:hidden}
+body:before{content:"";position:fixed;inset:0;pointer-events:none;background:radial-gradient(circle at 15% 0%,rgba(77,163,255,.14),transparent 34%),radial-gradient(circle at 90% 15%,rgba(123,97,255,.12),transparent 32%),linear-gradient(180deg,#08111f 0%,#050a13 58%);z-index:-2}
+body:after{content:"";position:fixed;inset:0;pointer-events:none;opacity:.28;background-image:radial-gradient(rgba(255,255,255,.18) .6px,transparent .6px);background-size:18px 18px;mask-image:linear-gradient(to bottom,black,transparent 75%);z-index:-1}
+button,input,textarea{font:inherit}button{border:0;color:inherit;cursor:pointer}.app{max-width:520px;margin:auto;padding:calc(16px + env(safe-area-inset-top)) 16px calc(92px + env(safe-area-inset-bottom))}.hidden{display:none!important}.fade{animation:fade .28s ease}@keyframes fade{from{opacity:0;transform:translateY(7px)}to{opacity:1;transform:none}}
+.splash{position:fixed;inset:0;z-index:50;display:flex;align-items:center;justify-content:center;background:#050a13}.splashInner{text-align:center}.falcon{width:112px;height:112px;margin:auto;border-radius:34px;display:grid;place-items:center;font-size:62px;background:linear-gradient(145deg,#10233c,#0b1220);border:1px solid rgba(255,255,255,.1);box-shadow:0 0 80px rgba(77,163,255,.18),inset 0 1px rgba(255,255,255,.08)}.splash h1{margin:20px 0 5px;font-size:30px;letter-spacing:-.8px}.splash p{margin:0;color:var(--muted);font-size:13px}.loader{width:190px;height:4px;background:#182438;border-radius:99px;overflow:hidden;margin:24px auto 0}.loader i{display:block;width:45%;height:100%;background:linear-gradient(90deg,var(--accent),var(--accent2));animation:load 1.1s infinite}@keyframes load{0%{transform:translateX(-120%)}100%{transform:translateX(330%)}}
+.top{display:flex;align-items:center;justify-content:space-between;margin-bottom:18px}.brand{display:flex;align-items:center;gap:10px}.brandIcon{width:42px;height:42px;border-radius:14px;display:grid;place-items:center;background:linear-gradient(145deg,#132c49,#0d1728);border:1px solid var(--line);font-size:23px}.brandText b{display:block;font-size:16px}.brandText span{font-size:11px;color:var(--muted)}.pill{padding:8px 11px;border:1px solid var(--line);border-radius:999px;background:rgba(255,255,255,.035);font-size:11px;color:#b9c8da}
+.page{display:none}.page.active{display:block}.hero{position:relative;overflow:hidden;padding:22px;border-radius:28px;background:linear-gradient(145deg,rgba(17,36,61,.98),rgba(8,17,30,.98));border:1px solid rgba(255,255,255,.1);box-shadow:0 20px 55px rgba(0,0,0,.28)}.hero:after{content:"";position:absolute;width:180px;height:180px;right:-75px;top:-75px;border-radius:50%;background:rgba(77,163,255,.16);filter:blur(12px)}.eyebrow{font-size:11px;color:#9bb1ca;text-transform:uppercase;letter-spacing:1.4px}.bigBalance{font-size:40px;line-height:1;margin:9px 0 6px;font-weight:850;letter-spacing:-1.4px}.heroSub{font-size:12px;color:var(--muted)}
+.sectionTitle{display:flex;justify-content:space-between;align-items:end;margin:22px 2px 11px}.sectionTitle h2{font-size:17px;margin:0}.sectionTitle span{font-size:11px;color:var(--muted)}
+.grid{display:grid;grid-template-columns:1fr 1fr;gap:11px}.action{min-height:92px;text-align:left;padding:16px;border-radius:20px;background:linear-gradient(145deg,#0e1b2d,#091321);border:1px solid var(--line);box-shadow:0 10px 25px rgba(0,0,0,.14);transition:.18s}.action:active{transform:scale(.98)}.ico{font-size:22px;margin-bottom:14px}.action b{display:block;font-size:14px}.action small{display:block;margin-top:3px;color:var(--muted);font-size:10px}
+.card{padding:18px;border-radius:var(--r);background:rgba(11,20,35,.88);border:1px solid var(--line);box-shadow:0 15px 38px rgba(0,0,0,.18);margin-bottom:12px}.statGrid{display:grid;grid-template-columns:1fr 1fr;gap:9px}.stat{padding:14px;border-radius:17px;background:rgba(255,255,255,.035);border:1px solid var(--line)}.stat span{display:block;color:var(--muted);font-size:10px;margin-bottom:6px}.stat b{font-size:15px}.money{font-weight:800}.muted{color:var(--muted);font-size:12px;line-height:1.55}.back{background:transparent;color:#a9bdd4;padding:8px 0;font-size:13px;margin-bottom:12px}.primary{width:100%;padding:14px;border-radius:16px;background:linear-gradient(135deg,#3f9dff,#6c70ff);font-weight:800;box-shadow:0 10px 28px rgba(77,163,255,.2);margin-top:10px}.secondary{width:100%;padding:13px;border-radius:16px;background:#0b1727;border:1px solid var(--line);font-weight:700;margin-top:9px}.danger{background:rgba(255,107,122,.08);border-color:rgba(255,107,122,.22)}
+.field{margin-top:12px}.field label{font-size:11px;color:#a7b7ca}.field input,.field textarea,.field select{width:100%;margin-top:7px;padding:14px;border-radius:14px;border:1px solid var(--line);background:#07111e;color:#fff;outline:none}.field textarea{min-height:110px;resize:none}.field input:focus,.field textarea:focus,.field select:focus{border-color:rgba(77,163,255,.7)}
+.notice{padding:12px 13px;border-radius:14px;font-size:12px;margin-top:10px}.ok{background:rgba(69,227,155,.08);border:1px solid rgba(69,227,155,.2);color:#8af0bc}.warn{background:rgba(255,204,102,.08);border:1px solid rgba(255,204,102,.2);color:#ffd98a}.err{background:rgba(255,107,122,.08);border:1px solid rgba(255,107,122,.2);color:#ff9ca7}
+.channel{display:flex;align-items:center;gap:12px;padding:13px;margin:9px 0;border-radius:16px;background:#081321;border:1px solid var(--line)}.channelIcon{width:38px;height:38px;border-radius:12px;display:grid;place-items:center;background:#10253e}.channelMain{flex:1}.channelMain b{display:block;font-size:13px}.channelMain span{font-size:10px;color:var(--muted)}.join{padding:9px 11px;border-radius:11px;background:#153a60;color:#8fc7ff;font-size:11px;font-weight:800}.joined{font-size:11px;color:var(--good);font-weight:800}
+.task{padding:15px;border-radius:18px;background:linear-gradient(145deg,#0d1b2d,#08121f);border:1px solid var(--line);margin:10px 0}.taskTop{display:flex;justify-content:space-between;gap:10px}.task h3{margin:0;font-size:14px}.reward{color:#79b9ff;font-weight:800;font-size:12px;white-space:nowrap}.task p{color:var(--muted);font-size:11px;line-height:1.5}.task a{color:#83bfff;text-decoration:none}.taskStatus{font-size:10px;color:#a9bbcf}.task textarea{width:100%;padding:12px;border-radius:12px;background:#07111e;border:1px solid var(--line);color:#fff;margin-top:8px;min-height:80px}
+.walletChoice{display:grid;grid-template-columns:1fr 1fr;gap:10px}.walletBtn{padding:18px 12px;border-radius:18px;background:#081321;border:1px solid var(--line);text-align:left}.walletBtn.active{border-color:rgba(77,163,255,.65);background:linear-gradient(145deg,#102845,#0a1728)}.walletBtn b{display:block;margin-top:8px}.walletBtn small{color:var(--muted);font-size:10px}.mask{font-family:monospace;letter-spacing:1px;color:#bcd0e8}.copyBox{display:flex;gap:8px}.copyBox input{flex:1}.copyBox button{width:52px;border-radius:14px;background:#12263d;border:1px solid var(--line)}
+.nav{position:fixed;left:50%;bottom:10px;transform:translateX(-50%);width:min(488px,calc(100% - 22px));display:grid;grid-template-columns:repeat(4,1fr);padding:7px;border-radius:22px;background:rgba(7,15,26,.88);backdrop-filter:blur(20px);border:1px solid rgba(255,255,255,.09);z-index:20}.nav button{background:transparent;padding:8px 3px;border-radius:15px;color:#7f92a9;font-size:10px}.nav button.active{background:#13263d;color:#fff}.nav i{font-style:normal;display:block;font-size:18px;margin-bottom:2px}
+@media(max-width:360px){.grid{gap:8px}.action{padding:13px}.bigBalance{font-size:35px}}
 </style>
 </head>
 <body>
+<div class="splash" id="splash"><div class="splashInner"><div class="falcon">🦅</div><h1>Falcon World</h1><p>Securely loading your account</p><div class="loader"><i></i></div></div></div>
+<div class="app" id="app">
+  <div class="top"><div class="brand"><div class="brandIcon">🦅</div><div class="brandText"><b>Falcon World</b><span>Earn • Grow • Withdraw</span></div></div><div class="pill" id="userPill">Online</div></div>
 
-<div class="loading" id="loading">
-<div class="logo">🦅</div>
-<h1>Falcon World</h1>
-<p>Loading your account...</p>
-<div class="progress"><span id="progress"></span></div>
-<div class="small" id="progressText">0%</div>
-</div>
+  <section id="verifyPage" class="page active fade">
+    <div class="hero"><div class="eyebrow">Secure access</div><div style="font-size:25px;font-weight:850;margin-top:7px">Human verification</div><div class="muted" style="margin-top:7px">Complete the quick check before entering Falcon World.</div></div>
+    <div class="card" id="captchaCard" style="margin-top:12px"><div class="eyebrow">Step 1 of 2</div><h2 style="margin:7px 0;font-size:18px">Quick verification</h2><div id="captchaQuestion" style="font-size:24px;font-weight:850;margin:16px 0">Loading…</div><div class="field"><label>Your answer</label><input id="captchaAnswer" inputmode="numeric" placeholder="Enter answer"></div><button class="primary" onclick="verifyCaptcha()">Verify & Continue</button><div id="captchaMsg"></div></div>
+    <div class="card hidden" id="channelsCard"><div class="eyebrow">Step 2 of 2</div><h2 style="margin:7px 0;font-size:18px">Required channels</h2><div class="muted">Join every required channel, then verify membership.</div><div id="channels" style="margin-top:12px"></div><button class="primary" onclick="verifyMembership()">✓ Verify Membership</button><div id="verifyMsg"></div></div>
+  </section>
 
-<div class="container">
+  <section id="home" class="page">
+    <div class="hero"><div class="eyebrow">Total balance</div><div class="bigBalance" id="balance">0.00 ETB</div><div class="heroSub">Available for your next withdrawal</div></div>
+    <div class="sectionTitle"><h2>Quick actions</h2><span>7 features</span></div>
+    <div class="grid">
+      <button class="action" onclick="go('balancePage')"><div class="ico">💰</div><b>Balance</b><small>View earnings</small></button>
+      <button class="action" onclick="go('referral')"><div class="ico">👥</div><b>Referral</b><small>Invite & earn</small></button>
+      <button class="action" onclick="go('daily')"><div class="ico">🎁</div><b>Daily Bonus</b><small>Claim every day</small></button>
+      <button class="action" onclick="go('wallet')"><div class="ico">💳</div><b>Wallet</b><small>CBE / Telebirr</small></button>
+      <button class="action" onclick="go('tasks')"><div class="ico">📋</div><b>Tasks</b><small>Earn rewards</small></button>
+      <button class="action" onclick="go('withdraw')"><div class="ico">💸</div><b>Withdraw</b><small>Request payout</small></button>
+      <button class="action" onclick="go('support')"><div class="ico">🆘</div><b>Support</b><small>Get assistance</small></button>
+    </div>
+    <div class="sectionTitle"><h2>Account</h2><span id="homeStatus">Verified</span></div>
+    <div class="card"><div class="statGrid"><div class="stat"><span>USER ID</span><b id="homeId">—</b></div><div class="stat"><span>WALLET</span><b id="homeWallet">Not set</b></div></div></div>
+  </section>
 
-<div id="verifyPage">
-<div class="header">
-<div class="brand">🦅 Falcon World</div>
-<div class="status">Verification</div>
-</div>
+  <section id="balancePage" class="page"><button class="back" onclick="go('home')">← Back to Home</button><div class="hero"><div class="eyebrow">Total balance</div><div class="bigBalance" id="balance2">0.00 ETB</div><div class="heroSub">Your earnings at a glance</div></div><div class="sectionTitle"><h2>Earnings breakdown</h2></div><div class="statGrid"><div class="stat"><span>REFERRAL EARNINGS</span><b id="refEarn">0.00 ETB</b></div><div class="stat"><span>DAILY BONUS</span><b id="dailyEarn">0.00 ETB</b></div><div class="stat"><span>TASK EARNINGS</span><b id="taskEarn">0.00 ETB</b></div><div class="stat"><span>TOTAL EARNED</span><b id="totalEarn">0.00 ETB</b></div><div class="stat"><span>TOTAL WITHDRAWN</span><b id="totalWithdrawn">0.00 ETB</b></div><div class="stat"><span>PENDING WITHDRAWAL</span><b id="pendingWithdraw">0.00 ETB</b></div></div></section>
 
-<div class="card">
-<div class="verify-title">Join Required Channels</div>
-<div class="muted">Join all channels, then press Verify.</div>
-<div id="channels"></div>
-<button class="primary" onclick="verify()">✅ Verify Membership</button>
-<div id="verifyMessage"></div>
-</div>
-</div>
+  <section id="referral" class="page"><button class="back" onclick="go('home')">← Back to Home</button><div class="hero"><div class="eyebrow">Referral program</div><div style="font-size:25px;font-weight:850;margin-top:7px">Invite friends & earn</div><div class="muted" style="margin-top:7px">You earn when your invited user completes verification.</div></div><div class="card" style="margin-top:12px"><div class="statGrid"><div class="stat"><span>INVITED USERS</span><b id="refCount">0</b></div><div class="stat"><span>REWARD / REFERRAL</span><b id="refReward">2.00 ETB</b></div><div class="stat"><span>REFERRAL EARNINGS</span><b id="refPageEarn">0.00 ETB</b></div></div><div class="field"><label>Your referral link</label><div class="copyBox"><input id="refLink" readonly><button onclick="copyReferral()">⧉</button></div></div><button class="primary" onclick="shareReferral()">↗ Share Referral Link</button><div id="refMsg"></div></div></section>
 
-<div id="dashboard" class="section">
-<div class="header">
-<div class="brand">🦅 Falcon World</div>
-<div class="status">Verified</div>
-</div>
+  <section id="daily" class="page"><button class="back" onclick="go('home')">← Back to Home</button><div class="hero"><div class="eyebrow">Daily reward</div><div style="font-size:25px;font-weight:850;margin-top:7px">+<span id="dailyReward">0.50</span> ETB</div><div class="muted" style="margin-top:7px">One claim per Gregorian calendar date.</div></div><div class="card" style="margin-top:12px"><div class="statGrid"><div class="stat"><span>TODAY</span><b id="todayDate">—</b></div><div class="stat"><span>NEXT CLAIM</span><b id="nextClaim">Available</b></div></div><button class="primary" id="claimBtn" onclick="claimDaily()">🎁 Claim Daily Bonus</button><div id="dailyMsg"></div></div></section>
 
-<div class="card">
-<div class="muted">Available Balance</div>
-<div class="balance" id="balance">0.00 ETB</div>
-</div>
+  <section id="wallet" class="page"><button class="back" onclick="go('home')">← Back to Home</button><div class="hero"><div class="eyebrow">Withdrawal wallet</div><div style="font-size:25px;font-weight:850;margin-top:7px">Connect your wallet</div><div class="muted" style="margin-top:7px">Use a valid CBE or Telebirr number for payouts.</div></div><div class="card" style="margin-top:12px"><div class="walletChoice"><button id="cbeBtn" class="walletBtn" onclick="selectWallet('CBE')">🔵<b>CBE</b><small>13 digits • starts with 1000</small></button><button id="teleBtn" class="walletBtn" onclick="selectWallet('Telebirr')">🟢<b>Telebirr</b><small>10 digits • starts 09 / 07</small></button></div><div class="field"><label>Wallet number</label><input id="walletNumber" inputmode="numeric" maxlength="13" placeholder="Enter wallet number"></div><button class="primary" onclick="saveWallet()">Save Wallet</button><div id="walletMsg"></div><div id="savedWallet" style="margin-top:14px"></div></div></section>
 
-<div class="grid">
-<button class="action" onclick="showSection('balancePage')">💰<br>Balance</button>
-<button class="action" onclick="showSection('referral')">👥<br>Referral</button>
-<button class="action" onclick="showSection('daily')">🎁<br>Daily Bonus</button>
-<button class="action" onclick="showSection('wallet')">💳<br>Wallet</button>
-<button class="action" onclick="showSection('tasks')">📋<br>Tasks</button>
-<button class="action" onclick="showSection('withdraw')">💸<br>Withdraw</button>
-<button class="action" onclick="showSection('support')">🆘<br>Support</button>
-</div>
+  <section id="tasks" class="page"><button class="back" onclick="go('home')">← Back to Home</button><div class="hero"><div class="eyebrow">Earn more</div><div style="font-size:25px;font-weight:850;margin-top:7px">Active tasks</div><div class="muted" style="margin-top:7px">New opportunities appear here when they are added.</div></div><div id="tasksList" class="card" style="margin-top:12px">Loading…</div></section>
 
-<div class="card" style="margin-top:14px">
-<div class="muted">Account</div>
-<div id="accountInfo" style="margin-top:7px"></div>
-</div>
-</div>
+  <section id="withdraw" class="page"><button class="back" onclick="go('home')">← Back to Home</button><div class="hero"><div class="eyebrow">Payout</div><div style="font-size:25px;font-weight:850;margin-top:7px">Withdraw earnings</div><div class="muted" style="margin-top:7px">Minimum withdrawal: <b id="minWithdraw">30.00 ETB</b></div></div><div class="card" style="margin-top:12px"><div class="statGrid"><div class="stat"><span>AVAILABLE</span><b id="withdrawBalance">0.00 ETB</b></div><div class="stat"><span>WALLET</span><b id="withdrawWallet">Not set</b></div></div><div class="field"><label>Withdrawal amount</label><input id="withdrawAmount" inputmode="decimal" placeholder="Enter amount"></div><button class="primary" onclick="withdraw()">💸 Request Withdrawal</button><div id="withdrawMsg"></div></div></section>
 
-<div id="balancePage" class="section">
-<div class="header"><div class="brand">💰 Balance</div></div>
-<div class="card">
-<div class="muted">Available Balance</div>
-<div class="balance" id="balancePageValue">0.00 ETB</div>
-<button class="secondary" onclick="showSection('dashboard')">← Back</button>
+  <section id="support" class="page"><button class="back" onclick="go('home')">← Back to Home</button><div class="hero"><div class="eyebrow">Support & services</div><div style="font-size:25px;font-weight:850;margin-top:7px">How can we help?</div><div class="muted" style="margin-top:7px">For advertising, promotion or growth services, contact us directly.</div></div><div class="card" style="margin-top:12px"><div class="statGrid"><div class="stat"><span>SERVICE</span><b>Telegram Channel Growth</b></div><div class="stat"><span>SERVICE</span><b>Telegram Group Growth</b></div><div class="stat"><span>SERVICE</span><b>Social Media Growth</b></div><div class="stat"><span>SERVICE</span><b>Advertising</b></div><div class="stat"><span>SERVICE</span><b>Promotion</b></div><div class="stat"><span>SERVICE</span><b>Digital Marketing</b></div><div class="stat"><span>SERVICE</span><b>Social Media Account Promotion</b></div><div class="stat"><span>SERVICE</span><b>Channel / Group Promotion</b></div></div><button class="primary" onclick="openSupport()">🆘 Contact @AmanM_12</button></div></section>
 </div>
-</div>
-
-<div id="daily" class="section">
-<div class="header"><div class="brand">🎁 Daily Bonus</div></div>
-<div class="card">
-<div class="muted">Daily reward</div>
-<div class="balance">+0.50 ETB</div>
-<div id="dailyMsg"></div>
-<button class="primary" onclick="claimDaily()">🎁 Claim Bonus</button>
-<button class="secondary" onclick="showSection('dashboard')">← Back</button>
-</div>
-</div>
-
-<div id="referral" class="section">
-<div class="header"><div class="brand">👥 Referral</div></div>
-<div class="card">
-<div class="muted">Your referral link</div>
-<input id="refLink" readonly>
-<button class="primary" onclick="copyReferral()">📋 Copy Link</button>
-<div id="refStats" style="margin-top:14px"></div>
-<button class="secondary" onclick="showSection('dashboard')">← Back</button>
-</div>
-</div>
-
-<div id="tasks" class="section">
-<div class="header"><div class="brand">📋 Tasks</div></div>
-<div class="card">
-<div id="tasksList">Loading...</div>
-<button class="secondary" onclick="showSection('dashboard')">← Back</button>
-</div>
-</div>
-
-<div id="wallet" class="section">
-<div class="header"><div class="brand">💳 Wallet</div></div>
-<div class="card">
-<div class="muted">Wallet type</div>
-<select id="walletType">
-<option value="CBE">CBE</option>
-<option value="Telebirr">Telebirr</option>
-</select>
-<div class="muted" style="margin-top:12px">Wallet number</div>
-<input id="walletNumber" inputmode="numeric" placeholder="Enter wallet number">
-<button class="primary" onclick="saveWallet()">💾 Save Wallet</button>
-<div id="walletMsg"></div>
-<button class="secondary" onclick="showSection('dashboard')">← Back</button>
-</div>
-</div>
-
-<div id="withdraw" class="section">
-<div class="header"><div class="brand">💸 Withdraw</div></div>
-<div class="card">
-<div class="muted">Current balance</div>
-<div class="balance" id="withdrawBalance">0.00 ETB</div>
-<div class="muted" style="margin-top:10px">Minimum withdrawal: 30 ETB</div>
-<input id="withdrawAmount" inputmode="decimal" type="number" min="30" step="0.01" placeholder="Enter withdrawal amount">
-<div class="muted small">Sufficient balance and a valid wallet are required.</div>
-<div id="withdrawMsg"></div>
-<button class="primary" onclick="withdraw()">💸 Request Withdrawal</button>
-<button class="secondary" onclick="showSection('dashboard')">← Back</button>
-</div>
-</div>
-
-<div id="support" class="section">
-<div class="header"><div class="brand">🆘 Support</div></div>
-<div class="card">
-<b>Advertising & Growth Services</b>
-<p class="muted">Telegram Channel Growth</p>
-<p class="muted">Telegram Group Growth</p>
-<p class="muted">Social Media Growth</p>
-<p class="muted">Advertising</p>
-<p class="muted">Promotion</p>
-<p class="muted">Digital Marketing</p>
-<p class="muted">Social Media Account Promotion</p>
-<p class="muted">Channel / Group Promotion</p>
-<p class="muted">Advertising & Promotion Services</p>
-<p><b>For advertising, promotion or growth services, contact us via DM: @AmanM_12</b></p>
-<button class="secondary" onclick="showSection('dashboard')">← Back</button>
-</div>
-</div>
-
-</div>
-
+<div class="nav" id="nav"><button id="navHome" onclick="go('home')"><i>⌂</i>Home</button><button onclick="go('balancePage')"><i>◈</i>Balance</button><button onclick="go('referral')"><i>♧</i>Referral</button><button onclick="go('support')"><i>?</i>Support</button></div>
 <script>
-const tg = window.Telegram?.WebApp;
-if(tg){
-tg.ready();
-tg.expand();
-}
-
-const initData = tg?.initData || "";
-const headers = {
-"Content-Type":"application/json",
-"X-Telegram-Init-Data":initData
-};
-
-let userData = null;
-
-function esc(s){
-return String(s ?? "").replace(/[&<>"']/g,m=>({
-"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#039;"
-}[m]));
-}
-
-function showSection(name){
-document.querySelectorAll(".section").forEach(x=>x.classList.remove("active"));
-if(name==="dashboard"){
-document.getElementById("dashboard").classList.add("active");
-loadMe();
-}else{
-document.getElementById(name).classList.add("active");
-if(name==="balancePage") loadMe();
-if(name==="referral") loadReferral();
-if(name==="tasks") loadTasks();
-if(name==="withdraw") loadMe();
-}
-}
-
-async function api(url, options={}){
-const res = await fetch(url,{
-...options,
-headers:{...headers,...(options.headers||{})}
-});
-let data={};
-try{data=await res.json()}catch(e){}
-if(!res.ok) throw new Error(data.error || "Request failed");
-return data;
-}
-
-async function loadCaptcha(){
-const box=document.getElementById("channels");
-box.innerHTML='<div class="card"><div class="verify-title">Human Verification</div><div class="muted">Please solve the verification question before continuing.</div><div id="captchaQuestion" style="font-size:24px;font-weight:800;margin:16px 0">Loading...</div><input id="captchaAnswer" inputmode="numeric" placeholder="Your answer"><button class="primary" onclick="verifyCaptcha()">✅ Verify</button><div id="captchaMsg"></div></div>';
-try{const data=await api("/api/captcha"); window.captchaNonce=data.nonce; document.getElementById("captchaQuestion").textContent=data.question;}catch(e){document.getElementById("captchaMsg").innerHTML=`<div class="warning">❌ ${esc(e.message)}</div>`;}
-}
-
-async function verifyCaptcha(){
-const msg=document.getElementById("captchaMsg");
-try{await api("/api/captcha/verify",{method:"POST",body:JSON.stringify({nonce:window.captchaNonce,answer:document.getElementById("captchaAnswer").value})}); renderChannels();}
-catch(e){msg.innerHTML=`<div class="warning">❌ ${esc(e.message)}</div>`;}
-}
-
-async function renderChannels(){
-const box=document.getElementById("channels"); box.innerHTML="Loading...";
-try{const data=await api("/api/verify",{method:"POST",body:"{}"}); if(data.verified){finishVerification();return;} data.channels.forEach(ch=>{const div=document.createElement("div");div.className="channel";div.innerHTML=`<div><div class="channel-name">${esc(ch.name)}</div><small>${esc(ch.username)}</small></div>${ch.joined?'<div class="joined">✓ Joined</div>':`<button class="join" onclick="openChannel('${ch.url}')">Join</button>`}`;box.appendChild(div);}); box.innerHTML+='<button class="primary" onclick="verifyChannels()">✅ Verify Membership</button><div id="verifyMessage"></div>';}catch(e){if(e.message==="captcha_required"){loadCaptcha();}else{box.innerHTML=`<div class="warning">❌ ${esc(e.message)}</div>`;}}
-}
-
-async function verifyChannels(){const msg=document.getElementById("verifyMessage");msg.innerHTML='<div class="muted" style="margin-top:10px">Checking...</div>';try{const data=await api("/api/verify",{method:"POST",body:"{}"});if(data.verified){finishVerification();}else{msg.innerHTML=`<div class="warning">⚠️ ${data.verified_count}/${data.total} channels joined. Join the remaining channels and verify again.</div>`;renderChannels();}}catch(e){msg.innerHTML=`<div class="warning">❌ ${esc(e.message)}</div>`;}}
-
-function finishVerification(){document.getElementById("verifyPage").classList.add("hidden");document.getElementById("dashboard").classList.add("active");loadMe();}
-
-function openChannel(url){
-if(tg && tg.openTelegramLink) tg.openTelegramLink(url);
-else window.open(url,"_blank");
-}
-
-async function verify(){ return verifyChannels(); }
-
-async function loadMe(){
-try{
-const data=await api("/api/me");
-userData=data;
-document.getElementById("balance").textContent=(data.balance||0).toFixed(2)+" ETB";
-document.getElementById("balancePageValue").textContent=(data.balance||0).toFixed(2)+" ETB";
-document.getElementById("withdrawBalance").textContent=(data.balance||0).toFixed(2)+" ETB";
-document.getElementById("accountInfo").innerHTML=
-`ID: <code>${esc(data.user_id)}</code><br>
-Verified: ${data.verified ? "✅ Yes":"❌ No"}<br>
-Wallet: ${data.wallet_type ? esc(data.wallet_type)+" / "+esc(data.wallet_number):"Not set"}`;
-if(data.wallet_type) document.getElementById("walletType").value=data.wallet_type;
-if(data.wallet_number) document.getElementById("walletNumber").value=data.wallet_number;
-}catch(e){
-console.error(e);
-}
-}
-
-async function loadReferral(){
-try{
-const data=await api("/api/referral");
-document.getElementById("refLink").value=data.link;
-document.getElementById("refStats").innerHTML=
-`👥 Successful referrals: <b>${data.count}</b><br>
-💰 Reward per verified referral: <b>${Number(data.reward).toFixed(2)} ETB</b>`;
-}catch(e){}
-}
-
-async function copyReferral(){
-const el=document.getElementById("refLink");
-try{
-await navigator.clipboard.writeText(el.value);
-if(tg) tg.showPopup({title:"Copied",message:"Referral link copied.",buttons:[{type:"ok"}]});
-}catch(e){el.select();document.execCommand("copy");}
-}
-
-async function claimDaily(){
-const msg=document.getElementById("dailyMsg");
-try{
-const data=await api("/api/daily-bonus",{method:"POST",body:"{}"});
-msg.innerHTML=`<div class="success">🎁 +${Number(data.reward).toFixed(2)} ETB added. Balance: ${Number(data.balance).toFixed(2)} ETB</div>`;
-loadMe();
-}catch(e){
-msg.innerHTML=`<div class="warning">⚠️ ${esc(e.message)}</div>`;
-}
-}
-
-async function loadTasks(){
-const box=document.getElementById("tasksList");
-box.innerHTML="Loading...";
-try{
-const data=await api("/api/tasks");
-if(!data.tasks.length){
-box.innerHTML='<div class="muted">No active tasks right now.</div>';
-return;
-}
-box.innerHTML=data.tasks.map(t=>`
-<div class="task">
-<h3>${esc(t.title)}</h3>
-<p>${esc(t.description)}</p>
-<p>💰 Reward: <b>${Number(t.reward).toFixed(2)} ETB</b></p>
-${t.url?`<p><a href="${esc(t.url)}" target="_blank">🔗 Open Task</a></p>`:""}
-<p class="small">Status: ${esc(t.submission_status || "not submitted")}</p>
-${t.submission_status!=="approved" && t.submission_status!=="pending"
-?`<textarea id="proof_${t.id}" placeholder="Write your proof here..."></textarea>
-<button class="primary" onclick="submitTask(${t.id})">📤 Submit Proof</button>`
-:""}
-</div>
-`).join("");
-}catch(e){
-box.innerHTML=`<div class="warning">${esc(e.message)}</div>`;
-}
-}
-
-async function submitTask(id){
-const proof=document.getElementById("proof_"+id)?.value?.trim();
-if(!proof){
-alert("Please enter proof.");
-return;
-}
-try{
-await api("/api/tasks/"+id+"/submit",{
-method:"POST",
-body:JSON.stringify({proof})
-});
-alert("Proof submitted successfully.");
-loadTasks();
-}catch(e){
-alert(e.message);
-}
-}
-
-async function saveWallet(){
-const msg=document.getElementById("walletMsg");
-const wallet_type=document.getElementById("walletType").value;
-const wallet_number=document.getElementById("walletNumber").value.trim();
-try{
-const data=await api("/api/wallet",{
-method:"POST",
-body:JSON.stringify({wallet_type,wallet_number})
-});
-msg.innerHTML=`<div class="${data.suspicious?'warning':'success'}">${esc(data.message)}${data.suspicious?"<br>⚠️ This wallet is already linked to another account.":""}</div>`;
-loadMe();
-}catch(e){
-msg.innerHTML=`<div class="warning">${esc(e.message)}</div>`;
-}
-}
-
-async function withdraw(){
-const msg=document.getElementById("withdrawMsg");
-const amount=Number(document.getElementById("withdrawAmount").value);
-try{const data=await api("/api/withdraw",{method:"POST",body:JSON.stringify({amount})});msg.innerHTML=`<div class="success">✅ Withdrawal #${data.withdrawal_id} created for ${Number(data.amount).toFixed(2)} ETB.</div>`;document.getElementById("withdrawAmount").value="";loadMe();}catch(e){msg.innerHTML=`<div class="warning">⚠️ ${esc(e.message)}</div>`;}}
-
-window.addEventListener("load",async()=>{
-let p=0;
-const timer=setInterval(()=>{
-p+=5;
-document.getElementById("progress").style.width=p+"%";
-document.getElementById("progressText").textContent=p+"%";
-if(p>=100){
-clearInterval(timer);
-setTimeout(async()=>{
-document.getElementById("loading").classList.add("hidden");
-try{
-const me=await api("/api/me");
-if(me.verified){
-document.getElementById("verifyPage").classList.add("hidden");
-document.getElementById("dashboard").classList.add("active");
-loadMe();
-}else{
-document.getElementById("verifyPage").classList.remove("hidden");
-renderChannels();
-}
-}catch(e){
-document.getElementById("verifyPage").classList.remove("hidden");
-renderChannels();
-}
-},250);
-}
-},35);
-});
+const tg=window.Telegram?.WebApp; if(tg){tg.ready();tg.expand();try{tg.setHeaderColor('#07101f');tg.setBackgroundColor('#050a13')}catch(e){}}
+const initData=tg?.initData||''; const headers={'Content-Type':'application/json','X-Telegram-Init-Data':initData}; let userData=null; let walletType='CBE'; let captchaToken='';
+function esc(s){return String(s??'').replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}[m]))}
+async function api(url,options={}){const r=await fetch(url,{...options,headers:{...headers,...(options.headers||{})}});let d={};try{d=await r.json()}catch(e){}if(!r.ok)throw new Error(d.error||'Request failed');return d}
+function setPage(id){document.querySelectorAll('.page').forEach(x=>x.classList.remove('active'));document.getElementById(id)?.classList.add('active');document.getElementById(id)?.classList.add('fade');window.scrollTo({top:0,behavior:'smooth'});document.getElementById('nav').style.display=id==='verifyPage'?'none':'grid';['navHome'].forEach(x=>document.getElementById(x)?.classList.toggle('active',id==='home'))}
+function go(id){setPage(id);if(id==='home'||id==='balancePage'||id==='withdraw')loadMe();if(id==='balancePage')loadMe();if(id==='referral')loadReferral();if(id==='daily')loadDaily();if(id==='wallet')renderWallet();if(id==='tasks')loadTasks()}
+function openLink(url){if(tg?.openTelegramLink)tg.openTelegramLink(url);else window.open(url,'_blank')}
+async function start(){try{const me=await api('/api/me');userData=me;if(me.verified){setPage('home');loadMe()}else{setPage('verifyPage');await loadCaptcha()}}catch(e){setPage('verifyPage');await loadCaptcha()}}
+async function loadCaptcha(){try{const d=await api('/api/captcha');captchaToken=d.token;document.getElementById('captchaQuestion').textContent=d.question;document.getElementById('captchaAnswer').value='';document.getElementById('captchaAnswer').focus()}catch(e){document.getElementById('captchaMsg').innerHTML='<div class="notice err">'+esc(e.message)+'</div>'}}
+async function verifyCaptcha(){const msg=document.getElementById('captchaMsg');try{const d=await api('/api/captcha/verify',{method:'POST',body:JSON.stringify({token:captchaToken,answer:document.getElementById('captchaAnswer').value})});if(d.ok){document.getElementById('captchaCard').classList.add('hidden');document.getElementById('channelsCard').classList.remove('hidden');await renderChannels()}else msg.innerHTML='<div class="notice err">Incorrect answer. Please try again.</div>'}catch(e){msg.innerHTML='<div class="notice err">'+esc(e.message)+'</div>';await loadCaptcha()}}
+async function renderChannels(){const box=document.getElementById('channels');box.innerHTML='Loading…';try{const d=await api('/api/verify');box.innerHTML=d.channels.filter(x=>!x.joined).map(ch=>`<div class="channel"><div class="channelIcon">📣</div><div class="channelMain"><b>${esc(ch.name)}</b><span>${esc(ch.username)}</span></div><button class="join" onclick="openLink('${ch.url}')">Join</button></div>`).join('')||'<div class="notice ok">All required channels appear joined. Tap Verify Membership.</div>'}catch(e){box.innerHTML='<div class="notice err">'+esc(e.message)+'</div>'}}
+async function verifyMembership(){const msg=document.getElementById('verifyMsg');msg.innerHTML='<div class="notice warn">Checking membership…</div>';try{const d=await api('/api/verify',{method:'POST',body:'{}'});if(d.verified){msg.innerHTML='<div class="notice ok">Verification successful. Welcome to Falcon World!</div>';setTimeout(()=>{setPage('home');loadMe()},350)}else{msg.innerHTML='<div class="notice warn">'+d.verified_count+'/'+d.total+' channels joined. Join the remaining channels and try again.</div>';renderChannels()}}catch(e){msg.innerHTML='<div class="notice err">'+esc(e.message)+'</div>'}}
+function money(n){return Number(n||0).toFixed(2)+' ETB'}
+async function loadMe(){try{const d=await api('/api/me');userData=d;document.getElementById('balance').textContent=money(d.balance);document.getElementById('balance2').textContent=money(d.balance);document.getElementById('withdrawBalance').textContent=money(d.balance);document.getElementById('homeId').textContent=d.user_id;document.getElementById('homeWallet').textContent=d.wallet_type||'Not set';document.getElementById('withdrawWallet').textContent=d.wallet_type?d.wallet_type:'Not set';document.getElementById('refEarn').textContent=money(d.referral_earnings);document.getElementById('dailyEarn').textContent=money(d.daily_bonus_earnings);document.getElementById('taskEarn').textContent=money(d.task_earnings);document.getElementById('totalEarn').textContent=money(d.total_earned);document.getElementById('totalWithdrawn').textContent=money(d.total_withdrawn);document.getElementById('pendingWithdraw').textContent=money(d.pending_withdrawal);document.getElementById('minWithdraw').textContent=money(d.min_withdraw);if(d.wallet_type){walletType=d.wallet_type;renderWallet()}}catch(e){}}
+async function loadReferral(){try{const d=await api('/api/referral');document.getElementById('refLink').value=d.link;document.getElementById('refCount').textContent=d.count;document.getElementById('refReward').textContent=money(d.reward);document.getElementById('refPageEarn').textContent=money(d.earnings)}catch(e){}}
+async function copyReferral(){try{await navigator.clipboard.writeText(document.getElementById('refLink').value);tg?.showPopup?.({title:'Copied',message:'Referral link copied.',buttons:[{type:'ok'}]})}catch(e){}}
+function shareReferral(){const link=document.getElementById('refLink').value;const text=encodeURIComponent('Join Falcon World and start earning rewards!');openLink('https://t.me/share/url?url='+encodeURIComponent(link)+'&text='+text)}
+async function loadDaily(){try{const d=await api('/api/daily-status');document.getElementById('dailyReward').textContent=Number(d.reward).toFixed(2);document.getElementById('todayDate').textContent=d.today;document.getElementById('nextClaim').textContent=d.can_claim?'Available':d.next_date;const b=document.getElementById('claimBtn');b.disabled=!d.can_claim;b.style.opacity=d.can_claim?'1':'.55'}catch(e){}}
+async function claimDaily(){const msg=document.getElementById('dailyMsg');try{const d=await api('/api/daily-bonus',{method:'POST',body:'{}'});msg.innerHTML='<div class="notice ok">+'+Number(d.reward).toFixed(2)+' ETB added. Your balance is '+money(d.balance)+'.</div>';loadMe();loadDaily()}catch(e){msg.innerHTML='<div class="notice warn">'+esc(e.message)+'</div>';loadDaily()}}
+function selectWallet(t){walletType=t;document.getElementById('cbeBtn').classList.toggle('active',t==='CBE');document.getElementById('teleBtn').classList.toggle('active',t==='Telebirr');const inp=document.getElementById('walletNumber');inp.maxLength=t==='CBE'?13:10;inp.placeholder=t==='CBE'?'1000XXXXXXXXX':'09XXXXXXXX / 07XXXXXXXX'}
+function renderWallet(){selectWallet(walletType);const w=userData?.wallet_type&&userData?.wallet_number?userData:null;if(w){document.getElementById('walletNumber').value=w.wallet_number;document.getElementById('savedWallet').innerHTML='<div class="notice ok">Connected wallet: <b>'+esc(w.wallet_type)+'</b> <span class="mask">'+esc(maskWallet(w.wallet_number))+'</span></div>'}}
+function maskWallet(n){if(n.length===13)return n.slice(0,4)+'*********';return n.slice(0,2)+'********'}
+async function saveWallet(){const msg=document.getElementById('walletMsg');try{const d=await api('/api/wallet',{method:'POST',body:JSON.stringify({wallet_type:walletType,wallet_number:document.getElementById('walletNumber').value.trim()})});msg.innerHTML='<div class="notice '+(d.suspicious?'warn':'ok')+'">'+esc(d.message)+(d.suspicious?' Duplicate wallet detected and flagged for admin review.':'')+'</div>';await loadMe();renderWallet()}catch(e){msg.innerHTML='<div class="notice err">'+esc(e.message)+'</div>'}}
+async function loadTasks(){const box=document.getElementById('tasksList');box.innerHTML='Loading…';try{const d=await api('/api/tasks');if(!d.tasks.length){box.innerHTML='<div class="muted">📋 No active tasks available right now. Please check back later.</div>';return}box.innerHTML=d.tasks.map(t=>`<div class="task"><div class="taskTop"><h3>${esc(t.title)}</h3><div class="reward">+${Number(t.reward).toFixed(2)} ETB</div></div><p>${esc(t.description||'Complete the task and submit your proof.')}</p>${t.url?`<p><a href="${esc(t.url)}" target="_blank">Open task →</a></p>`:''}<div class="taskStatus">Status: ${esc(t.submission_status||'not submitted')}</div>${t.submission_status!=='approved'&&t.submission_status!=='pending'?`<textarea id="proof_${t.id}" placeholder="Write your proof here…"></textarea><button class="primary" onclick="submitTask(${t.id})">Submit Proof</button>`:''}</div>`).join('')}catch(e){box.innerHTML='<div class="notice err">'+esc(e.message)+'</div>'}}
+async function submitTask(id){const proof=document.getElementById('proof_'+id)?.value.trim();if(!proof)return;try{await api('/api/tasks/'+id+'/submit',{method:'POST',body:JSON.stringify({proof})});tg?.showPopup?.({title:'Submitted',message:'Your proof has been submitted for review.',buttons:[{type:'ok'}]});loadTasks()}catch(e){tg?.showPopup?.({title:'Error',message:e.message,buttons:[{type:'ok'}]})}}
+async function withdraw(){const msg=document.getElementById('withdrawMsg');const amount=Number(document.getElementById('withdrawAmount').value);if(!amount||amount<=0){msg.innerHTML='<div class="notice err">Enter a valid withdrawal amount.</div>';return}try{const d=await api('/api/withdraw',{method:'POST',body:JSON.stringify({amount})});msg.innerHTML='<div class="notice ok">Withdrawal #'+d.withdrawal_id+' created for '+money(d.amount)+'.</div>';document.getElementById('withdrawAmount').value='';loadMe()}catch(e){msg.innerHTML='<div class="notice warn">'+esc(e.message)+'</div>'}}
+function openSupport(){openLink('https://t.me/AmanM_12')}
+window.addEventListener('load',async()=>{setTimeout(()=>document.getElementById('splash').classList.add('hidden'),700);await start()});
 </script>
-</body>
-</html>"""
+</body></html>"""
     return HTMLResponse(content=html)
+
+
+CAPTCHA_SESSIONS = {}
+
+
+def _new_captcha(user_id: int):
+    import secrets
+    import random
+    a, b = random.randint(11, 39), random.randint(3, 18)
+    token = secrets.token_urlsafe(18)
+    CAPTCHA_SESSIONS[user_id] = {"token": token, "answer": a + b, "expires": time.time() + 300}
+    return {"token": token, "question": f"What is {a} + {b}?"}
 
 
 @app.get("/api/captcha")
@@ -1976,8 +1501,7 @@ async def api_captcha(request: Request):
     user, error = await require_user(request)
     if error:
         return error
-    nonce, a, b = create_captcha(int(user["id"]))
-    return {"nonce": nonce, "question": f"What is {a} + {b}?"}
+    return _new_captcha(int(user["id"]))
 
 
 @app.post("/api/captcha/verify")
@@ -1985,13 +1509,22 @@ async def api_captcha_verify(request: Request):
     user, error = await require_user(request)
     if error:
         return error
+    uid = int(user["id"])
+    session = CAPTCHA_SESSIONS.get(uid)
+    if not session or session["expires"] < time.time():
+        return JSONResponse({"error": "CAPTCHA expired. Please request a new one."}, status_code=400)
     try:
         body = await request.json()
+        if str(body.get("token", "")) != str(session.get("token", "")):
+            return JSONResponse({"error": "Invalid verification session."}, status_code=400)
+        answer = int(str(body.get("answer", "")).strip())
     except Exception:
-        body = {}
-    ok, message = verify_captcha(int(user["id"]), str(body.get("nonce", "")), body.get("answer", ""))
-    if not ok:
-        return JSONResponse({"error": message}, status_code=400)
+        return JSONResponse({"error": "Please enter a valid number."}, status_code=400)
+    if answer != session["answer"]:
+        CAPTCHA_SESSIONS.pop(uid, None)
+        return JSONResponse({"ok": False, "error": "Incorrect answer. Please try again."}, status_code=400)
+    session["human"] = True
+    session["expires"] = time.time() + 600
     return {"ok": True}
 
 
@@ -2003,14 +1536,10 @@ async def verify_user(request: Request):
 
     user_id = int(user["id"])
 
-    # A successful captcha must exist immediately before channel verification.
-    conn = db()
-    try:
-        row = conn.execute("SELECT 1 FROM captcha_sessions WHERE user_id=? AND used=1 AND expires_at>=? ORDER BY expires_at DESC LIMIT 1", (user_id, int(time.time()))).fetchone()
-    finally:
-        conn.close()
-    if not row:
-        return JSONResponse({"error": "captcha_required"}, status_code=403)
+    if request.method == "POST":
+        session = CAPTCHA_SESSIONS.get(user_id)
+        if not session or not session.get("human") or session.get("expires", 0) < time.time():
+            return JSONResponse({"error": "Complete human verification first."}, status_code=403)
 
     verification = await check_all_channels(user_id)
 
@@ -2055,23 +1584,39 @@ async def api_me(request: Request):
     if not row:
         return JSONResponse({"error": "user_not_found"}, status_code=404)
 
-    wallet_number = row["wallet_number"] or ""
-    if row["wallet_type"] == "CBE" and len(wallet_number) == 13:
-        masked_wallet = wallet_number[:4] + "*********"
-    elif row["wallet_type"] == "Telebirr" and len(wallet_number) == 10:
-        masked_wallet = wallet_number[:2] + "********"
-    else:
-        masked_wallet = wallet_number
+    conn = db()
+    try:
+        total_withdrawn = conn.execute("SELECT COALESCE(SUM(amount),0) s FROM withdrawals WHERE user_id=? AND status='approved'", (user_id,)).fetchone()["s"]
+        pending_withdrawal = conn.execute("SELECT COALESCE(SUM(amount),0) s FROM withdrawals WHERE user_id=? AND status='pending'", (user_id,)).fetchone()["s"]
+    finally:
+        conn.close()
+    referral_earnings = float(row["referral_earnings"] or 0)
+    daily_bonus_earnings = float(row["daily_bonus_earnings"] or 0)
+    task_earnings = float(row["task_earnings"] or 0)
     return {
-        "user_id": row["user_id"],
-        "username": row["username"],
-        "first_name": row["first_name"],
-        "balance": float(row["balance"]),
-        "verified": bool(row["verified"]),
-        "wallet_type": row["wallet_type"],
-        "wallet_number": masked_wallet,
+        "user_id": row["user_id"], "username": row["username"], "first_name": row["first_name"],
+        "balance": float(row["balance"]), "verified": bool(row["verified"]),
+        "wallet_type": row["wallet_type"], "wallet_number": row["wallet_number"],
         "wallet_suspicious": bool(row["wallet_suspicious"]),
+        "referral_earnings": referral_earnings, "daily_bonus_earnings": daily_bonus_earnings,
+        "task_earnings": task_earnings, "total_earned": referral_earnings + daily_bonus_earnings + task_earnings,
+        "total_withdrawn": float(total_withdrawn or 0), "pending_withdrawal": float(pending_withdrawal or 0),
+        "min_withdraw": float(get_setting("min_withdraw", DEFAULT_MIN_WITHDRAW)),
     }
+
+
+@app.get("/api/daily-status")
+async def api_daily_status(request: Request):
+    user, error = await require_user(request)
+    if error:
+        return error
+    from datetime import timedelta
+    uid = int(user["id"])
+    row = get_user(uid)
+    today = _local_gregorian_date()
+    last = int(row["daily_last_claim"] or 0)
+    can = not last or _local_gregorian_date(last) != today
+    return {"today": str(today), "can_claim": can, "reward": float(get_setting("daily_bonus", DEFAULT_DAILY_BONUS)), "next_date": str(today + timedelta(days=1)) if not can else str(today)}
 
 
 @app.post("/api/daily-bonus")
@@ -2083,14 +1628,8 @@ async def api_daily_bonus(request: Request):
     ok, result = claim_daily_bonus(int(user["id"]))
 
     if not ok:
-        if result.get("error") == "cooldown":
-            return JSONResponse(
-                {
-                    "error": "Daily bonus is on cooldown.",
-                    "remaining": result["remaining"],
-                },
-                status_code=429,
-            )
+        if result.get("error") == "already_claimed":
+            return JSONResponse({"error": "Daily bonus already claimed for today.", "date": result.get("date")}, status_code=429)
         if result.get("error") == "not_verified":
             return JSONResponse(
                 {"error": "Please verify all required channels first."},
@@ -2121,11 +1660,8 @@ async def api_referral(request: Request):
         DEFAULT_REFERRAL_REWARD,
     )
 
-    return {
-        "link": link,
-        "count": count,
-        "reward": reward,
-    }
+    row = get_user(user_id)
+    return {"link": link, "count": count, "reward": reward, "earnings": float(row["referral_earnings"] or 0)}
 
 
 @app.post("/api/wallet")
@@ -2238,10 +1774,7 @@ async def api_withdraw(request: Request):
         body = await request.json()
     except Exception:
         body = {}
-    try:
-        requested_amount = float(body.get("amount", 0))
-    except Exception:
-        requested_amount = 0
+    requested_amount = body.get("amount")
     ok, result = create_withdrawal(int(user["id"]), requested_amount)
 
     if not ok:
