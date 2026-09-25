@@ -1,334 +1,194 @@
 import os
 import httpx
-
 from fastapi import FastAPI, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import HTMLResponse
 
-app = FastAPI(title="Falcon World")
-
-# =========================
-# CONFIG
-# =========================
+app = FastAPI()
 
 BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip()
 ADMIN_ID = os.getenv("ADMIN_ID", "").strip()
 
 BOT_USERNAME = "FalconWorld_Bot"
-
 WEBHOOK_URL = "https://falcon-world.onrender.com/webhook"
-
-# Mini App URL
 MINI_APP_URL = "https://falcon-world.onrender.com/app"
 
 TELEGRAM_API = f"https://api.telegram.org/bot{BOT_TOKEN}"
 
 
-# =========================
-# TELEGRAM API
-# =========================
-
-async def telegram_request(
-    method: str,
-    payload: dict | None = None,
-):
-    if not BOT_TOKEN:
-        raise RuntimeError("BOT_TOKEN is missing.")
-
-    async with httpx.AsyncClient(timeout=15.0) as client:
+async def telegram_request(method: str, data: dict):
+    async with httpx.AsyncClient(timeout=20) as client:
         response = await client.post(
             f"{TELEGRAM_API}/{method}",
-            json=payload or {},
+            json=data
         )
-
-        try:
-            return response.json()
-        except Exception:
-            return {
-                "ok": False,
-                "description": response.text,
-                "http_status": response.status_code,
-            }
+        return response.json()
 
 
-# =========================
-# SEND MESSAGE
-# =========================
-
-async def send_message(
-    chat_id: int,
-    text: str,
-    reply_markup: dict | None = None,
-):
-    payload = {
-        "chat_id": chat_id,
-        "text": text,
-    }
-
-    if reply_markup:
-        payload["reply_markup"] = reply_markup
-
+async def send_message(chat_id: int, text: str):
     return await telegram_request(
         "sendMessage",
-        payload,
+        {
+            "chat_id": chat_id,
+            "text": text,
+            "parse_mode": "Markdown",
+        }
     )
 
 
-# =========================
-# STARTUP
-# =========================
+async def set_menu_button():
+    return await telegram_request(
+        "setChatMenuButton",
+        {
+            "menu_button": {
+                "type": "web_app",
+                "text": "🚀 Open Falcon World",
+                "web_app": {
+                    "url": MINI_APP_URL
+                }
+            }
+        }
+    )
+
 
 @app.on_event("startup")
 async def startup():
-
     if not BOT_TOKEN:
         print("ERROR: BOT_TOKEN is missing.")
         return
 
-    result = await telegram_request(
+    webhook_result = await telegram_request(
         "setWebhook",
         {
             "url": WEBHOOK_URL,
             "allowed_updates": [
-                "message",
-                "callback_query",
-            ],
-        },
+                "message"
+            ]
+        }
     )
 
-    print("Webhook setup:", result)
+    print("Webhook setup:", webhook_result)
+
+    menu_result = await set_menu_button()
+
+    print("Menu button setup:", menu_result)
 
 
-# =========================
-# HEALTH
-# =========================
+@app.get("/")
+async def home():
+    return {
+        "status": "online",
+        "bot": "Falcon World"
+    }
+
 
 @app.get("/health")
 async def health():
-
     return {
-        "status": "ok",
-        "app": "Falcon World",
-        "bot": BOT_USERNAME,
-        "mini_app": MINI_APP_URL,
-        "database": "not_started",
+        "status": "healthy"
     }
 
 
-# =========================
-# ROOT
-# =========================
-
-@app.get("/")
-async def root():
-
-    return {
-        "status": "ok",
-        "app": "Falcon World",
-        "message": "Falcon World is running.",
-    }
-
-
-# =========================
-# MINI APP TEST PAGE
-# =========================
-
-@app.get("/app")
+@app.get("/app", response_class=HTMLResponse)
 async def mini_app():
+    return """
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <meta name="viewport"
+              content="width=device-width, initial-scale=1.0">
+        <title>Falcon World</title>
 
-    html = """
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
+        <style>
+            body {
+                margin: 0;
+                min-height: 100vh;
+                background: #07111f;
+                color: white;
+                font-family: Arial, sans-serif;
+                display: flex;
+                justify-content: center;
+                align-items: center;
+                text-align: center;
+            }
 
-    <meta
-        name="viewport"
-        content="width=device-width,
-        initial-scale=1.0,
-        maximum-scale=1.0,
-        user-scalable=no"
-    >
+            .container {
+                padding: 30px;
+            }
 
-    <title>Falcon World</title>
+            .logo {
+                font-size: 70px;
+            }
 
-    <style>
-        * {
-            box-sizing: border-box;
-            margin: 0;
-            padding: 0;
-        }
+            h1 {
+                margin: 10px 0;
+                font-size: 30px;
+                letter-spacing: 2px;
+            }
 
-        body {
-            min-height: 100vh;
-            font-family: Arial, sans-serif;
-            background: #07111f;
-            color: #ffffff;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            padding: 24px;
-        }
+            p {
+                color: #aeb8c5;
+                font-size: 16px;
+            }
 
-        .container {
-            width: 100%;
-            max-width: 420px;
-            text-align: center;
-        }
+            .status {
+                margin-top: 25px;
+                padding: 15px 20px;
+                border-radius: 15px;
+                background: #101f33;
+            }
+        </style>
+    </head>
 
-        .logo {
-            font-size: 64px;
-            margin-bottom: 18px;
-        }
+    <body>
+        <div class="container">
 
-        h1 {
-            font-size: 30px;
-            letter-spacing: 2px;
-            margin-bottom: 12px;
-        }
+            <div class="logo">🦅</div>
 
-        .subtitle {
-            color: #9eacbd;
-            font-size: 15px;
-            line-height: 1.6;
-            margin-bottom: 30px;
-        }
+            <h1>FALCON WORLD</h1>
 
-        .status {
-            padding: 16px;
-            border-radius: 16px;
-            background: #101d2e;
-            border: 1px solid #1e3148;
-            margin-bottom: 18px;
-        }
+            <p>
+                Earn. Refer. Grow.
+            </p>
 
-        .status-title {
-            font-size: 13px;
-            color: #8fa2b8;
-            margin-bottom: 7px;
-        }
+            <div class="status">
+                🚀 Mini App Connected
+            </div>
 
-        .status-value {
-            font-size: 18px;
-            font-weight: bold;
-        }
-
-        .open-button {
-            width: 100%;
-            border: none;
-            border-radius: 16px;
-            padding: 16px;
-            font-size: 16px;
-            font-weight: bold;
-            background: #ffffff;
-            color: #07111f;
-        }
-    </style>
-</head>
-
-<body>
-
-<div class="container">
-
-    <div class="logo">🦅</div>
-
-    <h1>FALCON WORLD</h1>
-
-    <div class="subtitle">
-        Earn. Refer. Withdraw.<br>
-        Your journey starts here.
-    </div>
-
-    <div class="status">
-        <div class="status-title">
-            PLATFORM STATUS
         </div>
+    </body>
+    </html>
+    """
 
-        <div class="status-value">
-            Connected
-        </div>
-    </div>
-
-    <button class="open-button">
-        Falcon World
-    </button>
-
-</div>
-
-</body>
-</html>
-"""
-
-    from fastapi.responses import HTMLResponse
-
-    return HTMLResponse(content=html)
-
-
-# =========================
-# TELEGRAM WEBHOOK
-# =========================
 
 @app.post("/webhook")
 async def webhook(request: Request):
+    update = await request.json()
 
-    try:
-        update = await request.json()
+    message = update.get("message")
 
-    except Exception:
-        return JSONResponse(
-            {
-                "ok": False,
-                "error": "Invalid JSON",
-            },
-            status_code=400,
-        )
-
-    # =========================
-    # MESSAGE
-    # =========================
-
-    if "message" in update:
-
-        message = update["message"]
-
-        chat = message.get("chat", {})
-        user = message.get("from", {})
-
-        chat_id = chat.get("id")
-        text = message.get("text", "")
-
-        if not chat_id:
-            return {"ok": True}
-
-        # =========================
-        # START
-        # =========================
-
-        if text.startswith("/start"):
-
-            keyboard = {
-                "inline_keyboard": [
-                    [
-                        {
-                            "text": "🚀 Open Falcon World",
-                            "web_app": {
-                                "url": MINI_APP_URL
-                            },
-                        }
-                    ]
-                ]
-            }
-
-            await send_message(
-                chat_id,
-                (
-                    "🦅 FALCON WORLD\n\n"
-                    "Welcome to Falcon World.\n\n"
-                    "Earn. Refer. Withdraw.\n\n"
-                    "Your journey starts here."
-                ),
-                keyboard,
-            )
-
+    if not message:
         return {"ok": True}
+
+    chat = message.get("chat", {})
+    chat_id = chat.get("id")
+
+    text = message.get("text", "").strip()
+
+    if text.startswith("/start"):
+        welcome_message = """
+🦅 *WELCOME TO FALCON WORLD*
+
+💰 *Earn & Complete Tasks*
+🎁 *Daily Rewards*
+👥 *Referral Rewards*
+🚀 *New Opportunities*
+
+📢 *Ads & Promotions:* Contact us
+💱 *USDT Exchange:* Buy & Sell
+
+🚀 Open Falcon World from the Menu below.
+"""
+
+        await send_message(chat_id, welcome_message)
 
     return {"ok": True}
