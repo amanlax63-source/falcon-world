@@ -886,9 +886,14 @@ async def handle_message(message):
         await send_message(
             chat_id,
             (
-                "🦅 <b>FALCON WORLD</b>\n\n"
-                "Earn rewards, complete tasks and grow your balance.\n\n"
-                "Use Telegram's <b>Open Falcon World</b> button to continue."
+                "🦅 <b>WELCOME TO FALCON WORLD</b>\n\n"
+                "💰 Earn & Complete Tasks\n"
+                "🎁 Daily Rewards\n"
+                "👥 Referral Rewards\n"
+                "🚀 New Opportunities\n\n"
+                "💱 USDT Exchange: Buy & Sell\n"
+                "📢 Ads & Promotions: DM @AmanM_12\n\n"
+                "🦅 <b>Tap the Falcon World button below to get started.</b>"
             ),
         )
         return
