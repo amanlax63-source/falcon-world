@@ -72,10 +72,13 @@ app = FastAPI()
 
 
 # =========================================================
-# TELEGRAM API HELPER
+# TELEGRAM API
 # =========================================================
 
-async def telegram_request(method: str, data: dict | None = None):
+async def telegram_request(
+    method: str,
+    data: dict | None = None
+):
     if not BOT_TOKEN:
         return {
             "ok": False,
@@ -83,7 +86,10 @@ async def telegram_request(method: str, data: dict | None = None):
         }
 
     try:
-        async with httpx.AsyncClient(timeout=20) as client:
+        async with httpx.AsyncClient(
+            timeout=20
+        ) as client:
+
             response = await client.post(
                 f"{TELEGRAM_API}/{method}",
                 json=data or {}
@@ -103,6 +109,7 @@ async def telegram_request(method: str, data: dict | None = None):
 # =========================================================
 
 async def set_menu_button():
+
     return await telegram_request(
         "setChatMenuButton",
         {
@@ -121,7 +128,11 @@ async def set_menu_button():
 # SEND MESSAGE
 # =========================================================
 
-async def send_message(chat_id: int, text: str):
+async def send_message(
+    chat_id: int,
+    text: str
+):
+
     return await telegram_request(
         "sendMessage",
         {
@@ -134,26 +145,27 @@ async def send_message(chat_id: int, text: str):
 
 
 # =========================================================
-# TELEGRAM WEB APP INIT DATA VALIDATION
+# TELEGRAM MINI APP INIT DATA VALIDATION
 # =========================================================
 
 def validate_init_data(init_data: str):
-    """
-    Validates Telegram Mini App initData using Telegram's
-    official HMAC verification method.
-
-    Returns:
-        user dict if valid
-        None if invalid
-    """
 
     if not init_data or not BOT_TOKEN:
         return None
 
     try:
-        parsed = dict(parse_qsl(init_data, keep_blank_values=True))
 
-        received_hash = parsed.pop("hash", None)
+        parsed = dict(
+            parse_qsl(
+                init_data,
+                keep_blank_values=True
+            )
+        )
+
+        received_hash = parsed.pop(
+            "hash",
+            None
+        )
 
         if not received_hash:
             return None
@@ -181,13 +193,17 @@ def validate_init_data(init_data: str):
         ):
             return None
 
-        # Check auth_date so very old initData is rejected.
-        auth_date = int(parsed.get("auth_date", "0"))
+        auth_date = int(
+            parsed.get(
+                "auth_date",
+                "0"
+            )
+        )
 
         if auth_date <= 0:
             return None
 
-        # 24 hours
+        # Reject data older than 24 hours.
         if time.time() - auth_date > 86400:
             return None
 
@@ -215,6 +231,7 @@ async def check_channel_membership(
     user_id: int,
     channel_username: str
 ):
+
     result = await telegram_request(
         "getChatMember",
         {
@@ -226,8 +243,14 @@ async def check_channel_membership(
     if not result.get("ok"):
         return False
 
-    member = result.get("result", {})
-    status = member.get("status")
+    member = result.get(
+        "result",
+        {}
+    )
+
+    status = member.get(
+        "status"
+    )
 
     return status in {
         "member",
@@ -237,12 +260,15 @@ async def check_channel_membership(
 
 
 # =========================================================
-# CHECK ALL 6 CHANNELS
+# CHECK ALL CHANNELS
 # =========================================================
 
-async def check_all_channels(user_id: int):
+async def check_all_channels(
+    user_id: int
+):
 
     async def check(channel):
+
         joined = await check_channel_membership(
             user_id,
             channel["username"]
@@ -254,15 +280,22 @@ async def check_all_channels(user_id: int):
         }
 
     results = await asyncio.gather(
-        *(check(channel) for channel in REQUIRED_CHANNELS)
+        *(
+            check(channel)
+            for channel in REQUIRED_CHANNELS
+        )
     )
 
     verified_count = sum(
-        1 for channel in results
+        1
+        for channel in results
         if channel["joined"]
     )
 
-    verified = verified_count == len(REQUIRED_CHANNELS)
+    verified = (
+        verified_count ==
+        len(REQUIRED_CHANNELS)
+    )
 
     return {
         "verified": verified,
@@ -278,6 +311,7 @@ async def check_all_channels(user_id: int):
 
 @app.get("/")
 async def home():
+
     return {
         "status": "online",
         "app": "Falcon World"
@@ -290,6 +324,7 @@ async def home():
 
 @app.get("/health")
 async def health():
+
     return {
         "status": "ok"
     }
@@ -299,11 +334,15 @@ async def health():
 # MINI APP
 # =========================================================
 
-@app.get("/app", response_class=HTMLResponse)
+@app.get(
+    "/app",
+    response_class=HTMLResponse
+)
 async def mini_app():
 
     html = r"""
 <!DOCTYPE html>
+
 <html lang="en">
 
 <head>
@@ -322,7 +361,12 @@ async def mini_app():
 
 <script src="https://telegram.org/js/telegram-web-app.js"></script>
 
+
 <style>
+
+/* =====================================================
+   GLOBAL
+===================================================== */
 
 * {
     box-sizing: border-box;
@@ -335,8 +379,10 @@ body {
     padding: 0;
     width: 100%;
     min-height: 100%;
+
     background: #050914;
-    color: white;
+    color: #ffffff;
+
     font-family:
         -apple-system,
         BlinkMacSystemFont,
@@ -350,6 +396,7 @@ body {
     overflow-x: hidden;
 }
 
+
 /* =====================================================
    BACKGROUND
 ===================================================== */
@@ -357,6 +404,7 @@ body {
 .app-bg {
     position: fixed;
     inset: 0;
+
     z-index: -2;
 
     background:
@@ -375,11 +423,14 @@ body {
 
 .glow {
     position: fixed;
+
     width: 280px;
     height: 280px;
+
     border-radius: 50%;
 
-    background: rgba(37, 99, 235, 0.10);
+    background:
+        rgba(37, 99, 235, 0.10);
 
     filter: blur(70px);
 
@@ -402,7 +453,9 @@ body {
     inset: 0;
 
     display: flex;
+
     flex-direction: column;
+
     align-items: center;
     justify-content: center;
 
@@ -426,6 +479,36 @@ body {
     visibility: hidden;
 }
 
+.loader-container {
+    position: relative;
+
+    width: 128px;
+    height: 128px;
+
+    display: flex;
+
+    align-items: center;
+    justify-content: center;
+}
+
+.loader-ring {
+
+    position: absolute;
+
+    width: 128px;
+    height: 128px;
+
+    border-radius: 50%;
+
+    border:
+        2px solid rgba(59, 130, 246, 0.12);
+
+    border-top-color: #60a5fa;
+
+    animation:
+        spin 1.2s linear infinite;
+}
+
 .falcon-loader {
 
     width: 108px;
@@ -434,6 +517,7 @@ body {
     border-radius: 32px;
 
     display: flex;
+
     align-items: center;
     justify-content: center;
 
@@ -457,29 +541,12 @@ body {
         falconPulse 1.5s ease-in-out infinite;
 }
 
-.loader-ring {
-
-    width: 128px;
-    height: 128px;
-
-    border-radius: 50%;
-
-    border:
-        2px solid rgba(59,130,246,0.12);
-
-    border-top-color: #60a5fa;
-
-    position: absolute;
-
-    animation:
-        spin 1.2s linear infinite;
-}
-
 .loading-title {
 
     margin-top: 28px;
 
     font-size: 24px;
+
     font-weight: 800;
 
     letter-spacing: 2px;
@@ -506,12 +573,13 @@ body {
 
     color: #60a5fa;
 
-    animation: dots 1.2s infinite;
+    animation:
+        dots 1.2s infinite;
 }
 
 
 /* =====================================================
-   MAIN APP
+   APP CONTENT
 ===================================================== */
 
 #appContent {
@@ -532,7 +600,7 @@ body {
 
 
 /* =====================================================
-   TOP BRAND
+   BRAND
 ===================================================== */
 
 .brand {
@@ -540,6 +608,7 @@ body {
     text-align: center;
 
     margin-top: 8px;
+
     margin-bottom: 24px;
 }
 
@@ -553,6 +622,7 @@ body {
     border-radius: 19px;
 
     display: flex;
+
     align-items: center;
     justify-content: center;
 
@@ -594,7 +664,7 @@ body {
 
 
 /* =====================================================
-   VERIFICATION HEADER
+   VERIFICATION CARD
 ===================================================== */
 
 .verify-card {
@@ -668,7 +738,8 @@ body {
 
     border-radius: 99px;
 
-    background: rgba(148,163,184,0.10);
+    background:
+        rgba(148,163,184,0.10);
 
     overflow: hidden;
 }
@@ -688,7 +759,8 @@ body {
             #38bdf8
         );
 
-    transition: width 0.4s ease;
+    transition:
+        width 0.4s ease;
 }
 
 
@@ -744,6 +816,7 @@ body {
     border-radius: 14px;
 
     display: flex;
+
     align-items: center;
     justify-content: center;
 
@@ -895,6 +968,7 @@ body {
     border-radius: 50%;
 
     display: flex;
+
     align-items: center;
     justify-content: center;
 
@@ -1016,7 +1090,8 @@ body {
 
 @keyframes falconPulse {
 
-    0%, 100% {
+    0%,
+    100% {
         transform: scale(1);
     }
 
@@ -1027,7 +1102,8 @@ body {
 
 @keyframes dots {
 
-    0%, 100% {
+    0%,
+    100% {
         opacity: 0.35;
     }
 
@@ -1056,17 +1132,19 @@ body {
 
 <body>
 
+
 <div class="app-bg"></div>
+
 <div class="glow"></div>
 
 
-<!-- ===================================================
+<!-- =====================================================
      LOADING SCREEN
-=================================================== -->
+===================================================== -->
 
 <div id="loadingScreen">
 
-    <div style="position:relative;">
+    <div class="loader-container">
 
         <div class="loader-ring"></div>
 
@@ -1091,11 +1169,14 @@ body {
 </div>
 
 
-<!-- ===================================================
-     APP CONTENT
-=================================================== -->
+<!-- =====================================================
+     MAIN APP
+===================================================== -->
 
 <div id="appContent">
+
+
+    <!-- BRAND -->
 
     <div class="brand">
 
@@ -1115,10 +1196,11 @@ body {
 
 
     <!-- =================================================
-         VERIFICATION AREA
+         VERIFICATION
     ================================================== -->
 
     <div id="verificationArea">
+
 
         <div class="verify-card">
 
@@ -1130,6 +1212,7 @@ body {
                 Join all required channels to unlock
                 Falcon World and continue.
             </div>
+
 
             <div class="progress-row">
 
@@ -1145,6 +1228,7 @@ body {
                 </span>
 
             </div>
+
 
             <div class="progress-bar">
 
@@ -1233,6 +1317,7 @@ body {
 
     </div>
 
+
 </div>
 
 
@@ -1242,9 +1327,11 @@ body {
    TELEGRAM
 ===================================================== */
 
-const tg = window.Telegram.WebApp;
+const tg =
+    window.Telegram.WebApp;
 
 tg.ready();
+
 tg.expand();
 
 
@@ -1253,25 +1340,27 @@ tg.expand();
 ===================================================== */
 
 let initData = "";
-let userId = null;
 
-let currentChannels = [];
+let userId = null;
 
 
 /* =====================================================
-   GET TELEGRAM USER
+   INITIALIZE TELEGRAM
 ===================================================== */
 
 function initializeTelegram() {
 
-    initData = tg.initData || "";
+    initData =
+        tg.initData || "";
 
     if (
         tg.initDataUnsafe &&
         tg.initDataUnsafe.user
     ) {
+
         userId =
             tg.initDataUnsafe.user.id;
+
     }
 
 }
@@ -1287,16 +1376,27 @@ function openChannel(url) {
 
         if (
             tg &&
-            typeof tg.openTelegramLink === "function"
+            typeof tg.openTelegramLink ===
+                "function"
         ) {
+
             tg.openTelegramLink(url);
+
         } else {
-            window.open(url, "_blank");
+
+            window.open(
+                url,
+                "_blank"
+            );
+
         }
 
     } catch (error) {
 
-        window.open(url, "_blank");
+        window.open(
+            url,
+            "_blank"
+        );
 
     }
 
@@ -1310,36 +1410,46 @@ function openChannel(url) {
 async function checkMembership() {
 
     const button =
-        document.getElementById("checkButton");
+        document.getElementById(
+            "checkButton"
+        );
+
 
     if (!initData) {
 
         showTelegramError();
 
         return;
+
     }
 
+
     button.disabled = true;
-    button.innerText = "Checking...";
+
+    button.innerText =
+        "Checking...";
+
 
     try {
 
-        const response = await fetch(
-            "/api/verify",
-            {
-                method: "POST",
+        const response =
+            await fetch(
+                "/api/verify",
+                {
+                    method: "POST",
 
-                headers: {
-                    "Content-Type":
-                        "application/json",
+                    headers: {
+                        "Content-Type":
+                            "application/json",
 
-                    "X-Telegram-Init-Data":
-                        initData
-                },
+                        "X-Telegram-Init-Data":
+                            initData
+                    },
 
-                body: JSON.stringify({})
-            }
-        );
+                    body:
+                        JSON.stringify({})
+                }
+            );
 
 
         const data =
@@ -1351,11 +1461,15 @@ async function checkMembership() {
             if (
                 data &&
                 data.error ===
-                "telegram_required"
+                    "telegram_required"
             ) {
+
                 showTelegramError();
+
                 return;
+
             }
+
 
             alert(
                 data.error ||
@@ -1363,15 +1477,12 @@ async function checkMembership() {
             );
 
             return;
+
         }
 
 
-        currentChannels =
-            data.channels || [];
-
-
         renderChannels(
-            currentChannels
+            data.channels || []
         );
 
 
@@ -1411,21 +1522,27 @@ async function checkMembership() {
    RENDER CHANNELS
 ===================================================== */
 
-function renderChannels(channels) {
+function renderChannels(
+    channels
+) {
 
     const container =
         document.getElementById(
             "channelList"
         );
 
+
     container.innerHTML = "";
 
 
     channels.forEach(
-        (channel, index) => {
+        (channel) => {
 
             const card =
-                document.createElement("div");
+                document.createElement(
+                    "div"
+                );
+
 
             card.className =
                 "channel-card";
@@ -1443,7 +1560,7 @@ function renderChannels(channels) {
                     : "channel-button";
 
 
-            const buttonDisabled =
+            const disabled =
                 channel.joined
                     ? "disabled"
                     : "";
@@ -1452,24 +1569,32 @@ function renderChannels(channels) {
             card.innerHTML = `
 
                 <div class="channel-icon">
-                    ${channel.joined ? "✓" : "📢"}
+                    ${
+                        channel.joined
+                            ? "✓"
+                            : "📢"
+                    }
                 </div>
 
                 <div class="channel-info">
 
                     <div class="channel-name">
-                        ${escapeHtml(channel.name)}
+                        ${escapeHtml(
+                            channel.name
+                        )}
                     </div>
 
                     <div class="channel-username">
-                        ${escapeHtml(channel.username)}
+                        ${escapeHtml(
+                            channel.username
+                        )}
                     </div>
 
                 </div>
 
                 <button
                     class="${buttonClass}"
-                    ${buttonDisabled}
+                    ${disabled}
                     onclick="openChannel('${channel.url}')"
                 >
                     ${buttonText}
@@ -1478,7 +1603,9 @@ function renderChannels(channels) {
             `;
 
 
-            container.appendChild(card);
+            container.appendChild(
+                card
+            );
 
         }
     );
@@ -1487,7 +1614,7 @@ function renderChannels(channels) {
 
 
 /* =====================================================
-   PROGRESS
+   UPDATE PROGRESS
 ===================================================== */
 
 function updateProgress(
@@ -1499,6 +1626,7 @@ function updateProgress(
         document.getElementById(
             "progressCount"
         );
+
 
     const fill =
         document.getElementById(
@@ -1533,10 +1661,12 @@ function showSuccess() {
             "verificationArea"
         );
 
+
     const successScreen =
         document.getElementById(
             "successScreen"
         );
+
 
     const dashboard =
         document.getElementById(
@@ -1553,17 +1683,20 @@ function showSuccess() {
     );
 
 
-    setTimeout(() => {
+    setTimeout(
+        () => {
 
-        successScreen.classList.remove(
-            "show"
-        );
+            successScreen.classList.remove(
+                "show"
+            );
 
-        dashboard.classList.add(
-            "show"
-        );
+            dashboard.classList.add(
+                "show"
+            );
 
-    }, 1300);
+        },
+        1300
+    );
 
 }
 
@@ -1578,6 +1711,7 @@ function showTelegramError() {
         document.getElementById(
             "channelList"
         );
+
 
     container.innerHTML = `
 
@@ -1604,20 +1738,37 @@ function showTelegramError() {
    ESCAPE HTML
 ===================================================== */
 
-function escapeHtml(value) {
+function escapeHtml(
+    value
+) {
 
     return String(value)
-        .replaceAll("&", "&amp;")
-        .replaceAll("<", "&lt;")
-        .replaceAll(">", "&gt;")
-        .replaceAll('"', "&quot;")
-        .replaceAll("'", "&#039;");
+        .replaceAll(
+            "&",
+            "&amp;"
+        )
+        .replaceAll(
+            "<",
+            "&lt;"
+        )
+        .replaceAll(
+            ">",
+            "&gt;"
+        )
+        .replaceAll(
+            '"',
+            "&quot;"
+        )
+        .replaceAll(
+            "'",
+            "&#039;"
+        );
 
 }
 
 
 /* =====================================================
-   INITIAL LOAD
+   START APP
 ===================================================== */
 
 async function startApp() {
@@ -1625,37 +1776,42 @@ async function startApp() {
     initializeTelegram();
 
 
-    setTimeout(() => {
+    setTimeout(
+        () => {
 
-        const loading =
-            document.getElementById(
-                "loadingScreen"
+            const loading =
+                document.getElementById(
+                    "loadingScreen"
+                );
+
+
+            const content =
+                document.getElementById(
+                    "appContent"
+                );
+
+
+            loading.classList.add(
+                "hide"
             );
 
-        const content =
-            document.getElementById(
-                "appContent"
+
+            content.classList.add(
+                "show"
             );
 
 
-        loading.classList.add(
-            "hide"
-        );
+            checkMembership();
 
-        content.classList.add(
-            "show"
-        );
-
-
-        checkMembership();
-
-    }, 1800);
+        },
+        1800
+    );
 
 }
 
 
 /* =====================================================
-   WHEN USER RETURNS FROM TELEGRAM CHANNEL
+   WHEN USER RETURNS FROM CHANNEL
 ===================================================== */
 
 document.addEventListener(
@@ -1664,16 +1820,16 @@ document.addEventListener(
 
         if (
             document.visibilityState ===
-            "visible"
+                "visible"
         ) {
 
-            if (
-                initData
-            ) {
+            if (initData) {
 
                 setTimeout(
                     () => {
+
                         checkMembership();
+
                     },
                     500
                 );
@@ -1695,10 +1851,13 @@ startApp();
 </script>
 
 </body>
+
 </html>
 """
 
-    return HTMLResponse(content=html)
+    return HTMLResponse(
+        content=html
+    )
 
 
 # =========================================================
@@ -1706,14 +1865,22 @@ startApp();
 # =========================================================
 
 @app.post("/api/verify")
-async def verify_user(request: Request):
+async def verify_user(
+    request: Request
+):
 
-    init_data = request.headers.get(
-        "X-Telegram-Init-Data",
-        ""
-    )
+    init_data =
+        request.headers.get(
+            "X-Telegram-Init-Data",
+            ""
+        )
 
-    user = validate_init_data(init_data)
+
+    user =
+        validate_init_data(
+            init_data
+        )
+
 
     if not user:
 
@@ -1726,11 +1893,14 @@ async def verify_user(request: Request):
         )
 
 
-    user_id = int(user["id"])
+    user_id =
+        int(user["id"])
 
 
     verification =
-        await check_all_channels(user_id)
+        await check_all_channels(
+            user_id
+        )
 
 
     return JSONResponse(
@@ -1743,11 +1913,14 @@ async def verify_user(request: Request):
 # =========================================================
 
 @app.post("/webhook")
-async def webhook(request: Request):
+async def webhook(
+    request: Request
+):
 
     try:
 
-        update = await request.json()
+        update =
+            await request.json()
 
     except Exception:
 
@@ -1756,37 +1929,47 @@ async def webhook(request: Request):
         }
 
 
-    message = update.get(
-        "message",
-        {}
-    )
+    message =
+        update.get(
+            "message",
+            {}
+        )
 
-    chat = message.get(
-        "chat",
-        {}
-    )
 
-    chat_id = chat.get(
-        "id"
-    )
+    chat =
+        message.get(
+            "chat",
+            {}
+        )
 
-    text = message.get(
-        "text",
-        ""
-    )
+
+    chat_id =
+        chat.get(
+            "id"
+        )
+
+
+    text =
+        message.get(
+            "text",
+            ""
+        )
 
 
     if not chat_id:
+
         return {
             "ok": True
         }
 
 
     # =====================================================
-    # START COMMAND
+    # START
     # =====================================================
 
-    if text.startswith("/start"):
+    if text.startswith(
+        "/start"
+    ):
 
         welcome_message = """
 🦅 *WELCOME TO FALCON WORLD*
@@ -1801,6 +1984,7 @@ async def webhook(request: Request):
 
 🚀 Open Falcon World from the Menu below.
 """
+
 
         await send_message(
             chat_id,
@@ -1829,16 +2013,19 @@ async def startup():
         return
 
 
-    webhook_result = await telegram_request(
-        "setWebhook",
-        {
-            "url": WEBHOOK_URL,
+    webhook_result =
+        await telegram_request(
+            "setWebhook",
+            {
+                "url":
+                    WEBHOOK_URL,
 
-            "allowed_updates": [
-                "message"
-            ]
-        }
-    )
+                "allowed_updates": [
+                    "message"
+                ]
+            }
+        )
+
 
     print(
         "Webhook setup:",
