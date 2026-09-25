@@ -33,7 +33,7 @@ DB_PATH = os.getenv("DB_PATH", "falcon_world.db").strip() or "falcon_world.db"
 
 DEFAULT_DAILY_BONUS = 0.50
 DEFAULT_REFERRAL_REWARD = 2.00
-DEFAULT_MIN_WITHDRAW = 100.00
+DEFAULT_MIN_WITHDRAW = 30.00
 
 REQUIRED_CHANNELS = [
     {"username": "@Sheger_tech1", "name": "Sheger Tech", "url": "https://t.me/Sheger_tech1"},
@@ -1583,7 +1583,7 @@ font-size:13px;
 <div class="card">
 <div class="muted">Current balance</div>
 <div class="balance" id="withdrawBalance">0.00 ETB</div>
-<div class="muted" style="margin-top:10px">Minimum withdrawal: 100 ETB</div>
+<div class="muted" style="margin-top:10px">Minimum withdrawal: 30 ETB</div>
 <div id="withdrawMsg"></div>
 <button class="primary" onclick="withdraw()">💸 Request Withdrawal</button>
 <button class="secondary" onclick="showSection('dashboard')">← Back</button>
@@ -1862,7 +1862,6 @@ async def verify_user(request: Request):
     verification = await check_all_channels(user_id)
 
     if verification["verified"]:
-        from bot import ensure_user
         ensure_user(
             user_id,
             user.get("username", ""),
@@ -1893,7 +1892,6 @@ async def api_me(request: Request):
         return error
 
     user_id = int(user["id"])
-    from bot import ensure_user
     ensure_user(
         user_id,
         user.get("username", ""),
