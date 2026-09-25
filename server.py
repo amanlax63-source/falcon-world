@@ -118,6 +118,24 @@ def init_db():
             value TEXT NOT NULL
         );
 
+        CREATE TABLE IF NOT EXISTS required_channels (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            username TEXT NOT NULL UNIQUE,
+            name TEXT NOT NULL,
+            url TEXT NOT NULL,
+            active INTEGER NOT NULL DEFAULT 1,
+            created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS captcha_sessions (
+            nonce TEXT PRIMARY KEY,
+            user_id INTEGER NOT NULL,
+            answer INTEGER NOT NULL,
+            expires_at INTEGER NOT NULL,
+            used INTEGER NOT NULL DEFAULT 0
+        );
+
         CREATE INDEX IF NOT EXISTS idx_withdrawals_status ON withdrawals(status);
         CREATE INDEX IF NOT EXISTS idx_submissions_task_user ON task_submissions(task_id, user_id);
         """)
@@ -130,6 +148,21 @@ def init_db():
             conn.execute(
                 "INSERT OR IGNORE INTO settings(key,value) VALUES(?,?)",
                 (key, str(value)),
+            )
+        channel_count = conn.execute("SELECT COUNT(*) c FROM required_channels").fetchone()["c"]
+        if channel_count == 0:
+            defaults_channels = [
+                ("@Sheger_tech1", "Sheger Tech", "https://t.me/Sheger_tech1"),
+                ("@EthioVortex1", "Ethio Vortex", "https://t.me/EthioVortex1"),
+                ("@ethiocashflow", "Ethio Cash Flow", "https://t.me/ethiocashflow"),
+                ("@AmanIncomeLab", "Aman Income Lab", "https://t.me/AmanIncomeLab"),
+                ("@OnlineIncomeHub07", "Online Income Hub", "https://t.me/OnlineIncomeHub07"),
+                ("@Paymentprooff2", "Payment Proof", "https://t.me/Paymentprooff2"),
+            ]
+            now = int(time.time())
+            conn.executemany(
+                "INSERT INTO required_channels(username,name,url,active,created_at,updated_at) VALUES(?,?,?,?,?,?)",
+                [(u,n,url,1,now,now) for u,n,url in defaults_channels],
             )
         conn.commit()
     finally:
@@ -161,6 +194,88 @@ def set_setting(key: str, value):
             (key, str(value)),
         )
         conn.commit()
+    finally:
+        conn.close()
+
+
+def get_required_channels():
+    conn = db()
+    try:
+        rows = conn.execute("SELECT username,name,url FROM required_channels WHERE active=1 ORDER BY id ASC").fetchall()
+        if rows:
+            return [dict(r) for r in rows]
+        return []
+    finally:
+        conn.close()
+
+
+def admin_add_channel(username, name, url):
+    username = username.strip()
+    if username and not username.startswith("@"):
+        username = "@" + username
+    if not re.fullmatch(r"@[A-Za-z0-9_]{5,32}", username):
+        return False, "Invalid channel username."
+    if not url.startswith("https://t.me/"):
+        url = f"https://t.me/{username.lstrip('@')}"
+    now = int(time.time())
+    conn = db()
+    try:
+        conn.execute("INSERT INTO required_channels(username,name,url,active,created_at,updated_at) VALUES(?,?,?,?,?,?)", (username,name.strip() or username,url,1,now,now))
+        conn.commit()
+        return True, "Channel added."
+    except sqlite3.IntegrityError:
+        conn.execute("UPDATE required_channels SET name=?,url=?,active=1,updated_at=? WHERE username=?", (name.strip() or username,url,now,username))
+        conn.commit()
+        return True, "Channel updated and enabled."
+    finally:
+        conn.close()
+
+
+def admin_remove_channel(username):
+    username = username.strip()
+    if username and not username.startswith("@"):
+        username = "@" + username
+    conn = db()
+    try:
+        cur = conn.execute("UPDATE required_channels SET active=0,updated_at=? WHERE username=?", (int(time.time()),username))
+        conn.commit()
+        return cur.rowcount > 0
+    finally:
+        conn.close()
+
+
+def create_captcha(user_id):
+    import secrets
+    a = secrets.randbelow(40) + 10
+    b = secrets.randbelow(40) + 10
+    nonce = secrets.token_urlsafe(18)
+    conn = db()
+    try:
+        now = int(time.time())
+        conn.execute("DELETE FROM captcha_sessions WHERE expires_at<? OR used=1", (now,))
+        conn.execute("INSERT INTO captcha_sessions(nonce,user_id,answer,expires_at,used) VALUES(?,?,?,?,0)", (nonce,user_id,a+b,now+300))
+        conn.commit()
+        return nonce, a, b
+    finally:
+        conn.close()
+
+
+def verify_captcha(user_id, nonce, answer):
+    conn = db()
+    try:
+        now = int(time.time())
+        row = conn.execute("SELECT answer,expires_at,used FROM captcha_sessions WHERE nonce=? AND user_id=?", (nonce,user_id)).fetchone()
+        if not row or row["used"] or int(row["expires_at"]) < now:
+            return False, "Captcha expired. Please request a new one."
+        try:
+            ok = int(answer) == int(row["answer"])
+        except Exception:
+            ok = False
+        if not ok:
+            return False, "Incorrect answer, please try again."
+        conn.execute("UPDATE captcha_sessions SET used=1 WHERE nonce=?", (nonce,))
+        conn.commit()
+        return True, "Verified"
     finally:
         conn.close()
 
@@ -390,13 +505,18 @@ def save_wallet(user_id: int, wallet_type: str, wallet_number: str):
                WHERE user_id=?""",
             (normalized, wallet_number, 1 if suspicious else 0, int(time.time()), user_id),
         )
+        if duplicate:
+            conn.execute(
+                "UPDATE users SET wallet_suspicious=1,updated_at=? WHERE user_id=?",
+                (int(time.time()), int(duplicate["user_id"])),
+            )
         conn.commit()
         return True, "Wallet saved successfully.", suspicious
     finally:
         conn.close()
 
 
-def create_withdrawal(user_id: int):
+def create_withdrawal(user_id: int, requested_amount: float):
     conn = db()
     try:
         conn.execute("BEGIN IMMEDIATE")
@@ -414,10 +534,17 @@ def create_withdrawal(user_id: int):
             conn.rollback()
             return False, "Please save your wallet first."
         minimum = float(get_setting("min_withdraw", DEFAULT_MIN_WITHDRAW))
-        amount = float(user["balance"])
+        try:
+            amount = round(float(requested_amount), 2)
+        except Exception:
+            conn.rollback()
+            return False, "Invalid withdrawal amount."
         if amount < minimum:
             conn.rollback()
             return False, f"Minimum withdrawal is {minimum:.2f} ETB."
+        if amount > float(user["balance"]):
+            conn.rollback()
+            return False, "Insufficient balance."
         pending = conn.execute(
             "SELECT id FROM withdrawals WHERE user_id=? AND status='pending' LIMIT 1",
             (user_id,),
@@ -443,8 +570,8 @@ def create_withdrawal(user_id: int):
         )
         wid = cur.lastrowid
         conn.execute(
-            "UPDATE users SET balance=0,updated_at=? WHERE user_id=?",
-            (now, user_id),
+            "UPDATE users SET balance=ROUND(balance-?,8),updated_at=? WHERE user_id=?",
+            (amount, now, user_id),
         )
         conn.commit()
         return True, {
@@ -581,8 +708,10 @@ async def notify_withdrawal(wid: int):
     text = (
         "💸 <b>New Withdrawal</b>\n\n"
         f"🆔 ID: <code>{row['id']}</code>\n"
-        f"👤 {format_user(row)}\n"
-        f"💰 Amount: <b>{row['amount']:.2f} ETB</b>\n"
+        f"👤 Full Name: <b>{html.escape(row['first_name'] or 'Unknown')}</b>\n"
+        f"🔖 Username: <b>@{html.escape(row['username'])}</b>\n" if row['username'] else f"👤 Full Name: <b>{html.escape(row['first_name'] or 'Unknown')}</b>\n🔖 Username: <b>None</b>\n"
+        f"🆔 Telegram ID: <code>{row['user_id']}</code>\n"
+        f"💰 Withdrawal Amount: <b>{row['amount']:.2f} ETB</b>\n"
         f"🏦 Wallet: <b>{html.escape(row['wallet_type'])}</b>\n"
         f"📱 Number: <code>{html.escape(row['wallet_number'])}</code>\n"
         f"⚠️ Suspicious: {'YES' if row['suspicious'] else 'No'}"
@@ -794,10 +923,10 @@ def parse_start_ref(text: str):
 def main_keyboard():
     return {
         "keyboard": [
-            [{"text": "💰 Balance"}, {"text": "🎁 Daily Bonus"}],
-            [{"text": "👥 Invite Friends"}, {"text": "📋 Tasks"}],
-            [{"text": "💳 Wallet Settings"}, {"text": "💸 Withdraw"}],
-            [{"text": "❓ Help"}, {"text": "🆘 Support"}],
+            [{"text": "💰 Balance"}, {"text": "👥 Referral"}],
+            [{"text": "🎁 Daily Bonus"}, {"text": "💳 Wallet"}],
+            [{"text": "📋 Tasks"}, {"text": "💸 Withdraw"}],
+            [{"text": "🆘 Support"}],
         ],
         "resize_keyboard": True,
     }
@@ -862,13 +991,13 @@ async def handle_message(message):
             await send_message(chat_id, "❌ Daily bonus could not be claimed.", main_keyboard())
         return
 
-    if text == "👥 Invite Friends":
+    if text == "👥 Referral":
         link = f"https://t.me/{BOT_USERNAME}?start=ref_{user_id}"
         count = get_referral_count(user_id)
         reward = get_setting("referral_reward", DEFAULT_REFERRAL_REWARD)
         await send_message(
             chat_id,
-            f"👥 <b>Invite Friends</b>\n\n"
+            f"👥 <b>Referral</b>\n\n"
             f"Invite link:\n<code>{html.escape(link)}</code>\n\n"
             f"👤 Successful referrals: <b>{count}</b>\n"
             f"💰 Reward: <b>{reward:.2f} ETB</b> each\n\n"
@@ -877,7 +1006,7 @@ async def handle_message(message):
         )
         return
 
-    if text == "💳 Wallet Settings":
+    if text == "💳 Wallet":
         row = get_user(user_id)
         wallet = "Not set"
         if row["wallet_type"] and row["wallet_number"]:
@@ -917,20 +1046,6 @@ async def handle_message(message):
             )
         lines.append("\n🚀 Open the Mini App to complete and submit tasks.")
         await send_message(chat_id, "\n\n".join(lines), main_keyboard())
-        return
-
-    if text == "❓ Help":
-        await send_message(
-            chat_id,
-            "❓ <b>Help</b>\n\n"
-            "1. Join all required channels.\n"
-            "2. Verify your account.\n"
-            "3. Complete tasks and daily bonus.\n"
-            "4. Save CBE or Telebirr.\n"
-            "5. Withdraw when you reach the minimum.\n\n"
-            "Use /start to open Falcon World.",
-            main_keyboard(),
-        )
         return
 
     if text == "🆘 Support":
@@ -1029,6 +1144,31 @@ async def handle_message(message):
         await send_message(chat_id, f"✅ Referral reward set to {value:.2f} ETB.")
         return
 
+    if text == "/channels" and is_admin(user_id):
+        channels = get_required_channels()
+        if not channels:
+            await send_message(chat_id, "No required channels configured.")
+        else:
+            lines = [f"{i+1}. {html.escape(c['name'])} — <code>{html.escape(c['username'])}</code>" for i,c in enumerate(channels)]
+            await send_message(chat_id, "📢 <b>Required Channels</b>\n\n" + "\n".join(lines) + "\n\nAdd: /addchannel @username | Name | https://t.me/username\nRemove: /removechannel @username")
+        return
+
+    if text.startswith("/addchannel ") and is_admin(user_id):
+        parts = [x.strip() for x in text.split("|",2)]
+        if len(parts) < 2:
+            await send_message(chat_id, "Usage: /addchannel @username | Channel Name | https://t.me/username")
+            return
+        username, name = parts[0], parts[1]
+        url = parts[2] if len(parts) > 2 else ""
+        ok, msg = admin_add_channel(username,name,url)
+        await send_message(chat_id, ("✅ " if ok else "❌ ") + msg)
+        return
+
+    if text.startswith("/removechannel ") and is_admin(user_id):
+        ok = admin_remove_channel(text.split(maxsplit=1)[1]) if len(text.split(maxsplit=1)) > 1 else False
+        await send_message(chat_id, "✅ Channel removed from required list." if ok else "❌ Channel not found.")
+        return
+
     if text.startswith("/addtask ") and is_admin(user_id):
         parts = text.split("|", 3)
         if len(parts) != 4:
@@ -1089,7 +1229,10 @@ async def admin_dashboard(chat_id):
         "/addtask TITLE|DESCRIPTION|REWARD|URL\n"
         "/setminwithdraw AMOUNT\n"
         "/setdaily AMOUNT\n"
-        "/setref AMOUNT",
+        "/setref AMOUNT\n"
+        "/channels\n"
+        "/addchannel @username | Name | https://t.me/username\n"
+        "/removechannel @username",
     )
 
 
@@ -1181,29 +1324,14 @@ async def check_channel_membership(user_id: int, channel_username: str):
 
 
 async def check_all_channels(user_id: int):
+    channels = get_required_channels()
     async def check(channel):
-        joined = await check_channel_membership(
-            user_id,
-            channel["username"],
-        )
+        joined = await check_channel_membership(user_id, channel["username"])
         return {**channel, "joined": joined}
-
-    results = await asyncio.gather(
-        *(check(ch) for ch in REQUIRED_CHANNELS)
-    )
-
-    verified_count = sum(
-        1 for channel in results if channel["joined"]
-    )
-
-    verified = verified_count == len(REQUIRED_CHANNELS)
-
-    return {
-        "verified": verified,
-        "verified_count": verified_count,
-        "total": len(REQUIRED_CHANNELS),
-        "channels": results,
-    }
+    results = await asyncio.gather(*(check(ch) for ch in channels)) if channels else []
+    verified_count = sum(1 for channel in results if channel["joined"])
+    verified = bool(channels) and verified_count == len(channels)
+    return {"verified": verified, "verified_count": verified_count, "total": len(channels), "channels": results}
 
 
 async def require_user(request: Request):
@@ -1518,17 +1646,27 @@ font-size:13px;
 </div>
 
 <div class="grid">
-<button class="action" onclick="showSection('daily')">🎁<br>Daily Bonus</button>
+<button class="action" onclick="showSection('balancePage')">💰<br>Balance</button>
 <button class="action" onclick="showSection('referral')">👥<br>Referral</button>
-<button class="action" onclick="showSection('tasks')">📋<br>Tasks</button>
+<button class="action" onclick="showSection('daily')">🎁<br>Daily Bonus</button>
 <button class="action" onclick="showSection('wallet')">💳<br>Wallet</button>
+<button class="action" onclick="showSection('tasks')">📋<br>Tasks</button>
 <button class="action" onclick="showSection('withdraw')">💸<br>Withdraw</button>
-<button class="action" onclick="showSection('help')">❓<br>Help</button>
+<button class="action" onclick="showSection('support')">🆘<br>Support</button>
 </div>
 
 <div class="card" style="margin-top:14px">
 <div class="muted">Account</div>
 <div id="accountInfo" style="margin-top:7px"></div>
+</div>
+</div>
+
+<div id="balancePage" class="section">
+<div class="header"><div class="brand">💰 Balance</div></div>
+<div class="card">
+<div class="muted">Available Balance</div>
+<div class="balance" id="balancePageValue">0.00 ETB</div>
+<button class="secondary" onclick="showSection('dashboard')">← Back</button>
 </div>
 </div>
 
@@ -1544,7 +1682,7 @@ font-size:13px;
 </div>
 
 <div id="referral" class="section">
-<div class="header"><div class="brand">👥 Invite Friends</div></div>
+<div class="header"><div class="brand">👥 Referral</div></div>
 <div class="card">
 <div class="muted">Your referral link</div>
 <input id="refLink" readonly>
@@ -1584,22 +1722,28 @@ font-size:13px;
 <div class="muted">Current balance</div>
 <div class="balance" id="withdrawBalance">0.00 ETB</div>
 <div class="muted" style="margin-top:10px">Minimum withdrawal: 30 ETB</div>
+<input id="withdrawAmount" inputmode="decimal" type="number" min="30" step="0.01" placeholder="Enter withdrawal amount">
+<div class="muted small">Sufficient balance and a valid wallet are required.</div>
 <div id="withdrawMsg"></div>
 <button class="primary" onclick="withdraw()">💸 Request Withdrawal</button>
 <button class="secondary" onclick="showSection('dashboard')">← Back</button>
 </div>
 </div>
 
-<div id="help" class="section">
-<div class="header"><div class="brand">❓ Help</div></div>
+<div id="support" class="section">
+<div class="header"><div class="brand">🆘 Support</div></div>
 <div class="card">
-<b>How Falcon World works</b>
-<p class="muted">1. Join all required channels.</p>
-<p class="muted">2. Verify your account.</p>
-<p class="muted">3. Claim the daily bonus.</p>
-<p class="muted">4. Invite friends.</p>
-<p class="muted">5. Complete available tasks.</p>
-<p class="muted">6. Save CBE or Telebirr and withdraw when you reach the minimum.</p>
+<b>Advertising & Growth Services</b>
+<p class="muted">Telegram Channel Growth</p>
+<p class="muted">Telegram Group Growth</p>
+<p class="muted">Social Media Growth</p>
+<p class="muted">Advertising</p>
+<p class="muted">Promotion</p>
+<p class="muted">Digital Marketing</p>
+<p class="muted">Social Media Account Promotion</p>
+<p class="muted">Channel / Group Promotion</p>
+<p class="muted">Advertising & Promotion Services</p>
+<p><b>For advertising, promotion or growth services, contact us via DM: @AmanM_12</b></p>
 <button class="secondary" onclick="showSection('dashboard')">← Back</button>
 </div>
 </div>
@@ -1634,6 +1778,7 @@ document.getElementById("dashboard").classList.add("active");
 loadMe();
 }else{
 document.getElementById(name).classList.add("active");
+if(name==="balancePage") loadMe();
 if(name==="referral") loadReferral();
 if(name==="tasks") loadTasks();
 if(name==="withdraw") loadMe();
@@ -1651,59 +1796,40 @@ if(!res.ok) throw new Error(data.error || "Request failed");
 return data;
 }
 
-async function renderChannels(){
+async function loadCaptcha(){
 const box=document.getElementById("channels");
-box.innerHTML="";
-try{
-const data=await api("/api/verify",{method:"POST",body:"{}"});
-data.channels.forEach(ch=>{
-const div=document.createElement("div");
-div.className="channel";
-div.innerHTML=`
-<div>
-<div class="channel-name">${esc(ch.name)}</div>
-<small>${esc(ch.username)}</small>
-</div>
-${ch.joined
-?'<div class="joined">✓ Joined</div>'
-:`<button class="join" onclick="openChannel('${ch.url}')">Join</button>`}
-`;
-box.appendChild(div);
-});
-}catch(e){
-box.innerHTML='<div class="warning">Telegram authentication is required. Open Falcon World from Telegram.</div>';
+box.innerHTML='<div class="card"><div class="verify-title">Human Verification</div><div class="muted">Please solve the verification question before continuing.</div><div id="captchaQuestion" style="font-size:24px;font-weight:800;margin:16px 0">Loading...</div><input id="captchaAnswer" inputmode="numeric" placeholder="Your answer"><button class="primary" onclick="verifyCaptcha()">✅ Verify</button><div id="captchaMsg"></div></div>';
+try{const data=await api("/api/captcha"); window.captchaNonce=data.nonce; document.getElementById("captchaQuestion").textContent=data.question;}catch(e){document.getElementById("captchaMsg").innerHTML=`<div class="warning">❌ ${esc(e.message)}</div>`;}
 }
+
+async function verifyCaptcha(){
+const msg=document.getElementById("captchaMsg");
+try{await api("/api/captcha/verify",{method:"POST",body:JSON.stringify({nonce:window.captchaNonce,answer:document.getElementById("captchaAnswer").value})}); renderChannels();}
+catch(e){msg.innerHTML=`<div class="warning">❌ ${esc(e.message)}</div>`;}
 }
+
+async function renderChannels(){
+const box=document.getElementById("channels"); box.innerHTML="Loading...";
+try{const data=await api("/api/verify",{method:"POST",body:"{}"}); if(data.verified){finishVerification();return;} data.channels.forEach(ch=>{const div=document.createElement("div");div.className="channel";div.innerHTML=`<div><div class="channel-name">${esc(ch.name)}</div><small>${esc(ch.username)}</small></div>${ch.joined?'<div class="joined">✓ Joined</div>':`<button class="join" onclick="openChannel('${ch.url}')">Join</button>`}`;box.appendChild(div);}); box.innerHTML+='<button class="primary" onclick="verifyChannels()">✅ Verify Membership</button><div id="verifyMessage"></div>';}catch(e){if(e.message==="captcha_required"){loadCaptcha();}else{box.innerHTML=`<div class="warning">❌ ${esc(e.message)}</div>`;}}
+}
+
+async function verifyChannels(){const msg=document.getElementById("verifyMessage");msg.innerHTML='<div class="muted" style="margin-top:10px">Checking...</div>';try{const data=await api("/api/verify",{method:"POST",body:"{}"});if(data.verified){finishVerification();}else{msg.innerHTML=`<div class="warning">⚠️ ${data.verified_count}/${data.total} channels joined. Join the remaining channels and verify again.</div>`;renderChannels();}}catch(e){msg.innerHTML=`<div class="warning">❌ ${esc(e.message)}</div>`;}}
+
+function finishVerification(){document.getElementById("verifyPage").classList.add("hidden");document.getElementById("dashboard").classList.add("active");loadMe();}
 
 function openChannel(url){
 if(tg && tg.openTelegramLink) tg.openTelegramLink(url);
 else window.open(url,"_blank");
 }
 
-async function verify(){
-const msg=document.getElementById("verifyMessage");
-msg.innerHTML='<div class="muted" style="margin-top:10px">Checking...</div>';
-try{
-const data=await api("/api/verify",{method:"POST",body:"{}"});
-if(data.verified){
-msg.innerHTML='<div class="success">✅ Verification successful.</div>';
-await loadMe();
-document.getElementById("verifyPage").classList.add("hidden");
-document.getElementById("dashboard").classList.add("active");
-}else{
-msg.innerHTML=`<div class="warning">⚠️ ${data.verified_count}/${data.total} channels joined. Join the remaining channels and verify again.</div>`;
-renderChannels();
-}
-}catch(e){
-msg.innerHTML=`<div class="warning">❌ ${esc(e.message)}</div>`;
-}
-}
+async function verify(){ return verifyChannels(); }
 
 async function loadMe(){
 try{
 const data=await api("/api/me");
 userData=data;
 document.getElementById("balance").textContent=(data.balance||0).toFixed(2)+" ETB";
+document.getElementById("balancePageValue").textContent=(data.balance||0).toFixed(2)+" ETB";
 document.getElementById("withdrawBalance").textContent=(data.balance||0).toFixed(2)+" ETB";
 document.getElementById("accountInfo").innerHTML=
 `ID: <code>${esc(data.user_id)}</code><br>
@@ -1808,14 +1934,8 @@ msg.innerHTML=`<div class="warning">${esc(e.message)}</div>`;
 
 async function withdraw(){
 const msg=document.getElementById("withdrawMsg");
-try{
-const data=await api("/api/withdraw",{method:"POST",body:"{}"});
-msg.innerHTML=`<div class="success">✅ Withdrawal #${data.withdrawal_id} created for ${Number(data.amount).toFixed(2)} ETB.</div>`;
-loadMe();
-}catch(e){
-msg.innerHTML=`<div class="warning">⚠️ ${esc(e.message)}</div>`;
-}
-}
+const amount=Number(document.getElementById("withdrawAmount").value);
+try{const data=await api("/api/withdraw",{method:"POST",body:JSON.stringify({amount})});msg.innerHTML=`<div class="success">✅ Withdrawal #${data.withdrawal_id} created for ${Number(data.amount).toFixed(2)} ETB.</div>`;document.getElementById("withdrawAmount").value="";loadMe();}catch(e){msg.innerHTML=`<div class="warning">⚠️ ${esc(e.message)}</div>`;}}
 
 window.addEventListener("load",async()=>{
 let p=0;
@@ -1851,6 +1971,30 @@ renderChannels();
     return HTMLResponse(content=html)
 
 
+@app.get("/api/captcha")
+async def api_captcha(request: Request):
+    user, error = await require_user(request)
+    if error:
+        return error
+    nonce, a, b = create_captcha(int(user["id"]))
+    return {"nonce": nonce, "question": f"What is {a} + {b}?"}
+
+
+@app.post("/api/captcha/verify")
+async def api_captcha_verify(request: Request):
+    user, error = await require_user(request)
+    if error:
+        return error
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    ok, message = verify_captcha(int(user["id"]), str(body.get("nonce", "")), body.get("answer", ""))
+    if not ok:
+        return JSONResponse({"error": message}, status_code=400)
+    return {"ok": True}
+
+
 @app.post("/api/verify")
 async def verify_user(request: Request):
     user, error = await require_user(request)
@@ -1858,6 +2002,15 @@ async def verify_user(request: Request):
         return error
 
     user_id = int(user["id"])
+
+    # A successful captcha must exist immediately before channel verification.
+    conn = db()
+    try:
+        row = conn.execute("SELECT 1 FROM captcha_sessions WHERE user_id=? AND used=1 AND expires_at>=? ORDER BY expires_at DESC LIMIT 1", (user_id, int(time.time()))).fetchone()
+    finally:
+        conn.close()
+    if not row:
+        return JSONResponse({"error": "captcha_required"}, status_code=403)
 
     verification = await check_all_channels(user_id)
 
@@ -1902,6 +2055,13 @@ async def api_me(request: Request):
     if not row:
         return JSONResponse({"error": "user_not_found"}, status_code=404)
 
+    wallet_number = row["wallet_number"] or ""
+    if row["wallet_type"] == "CBE" and len(wallet_number) == 13:
+        masked_wallet = wallet_number[:4] + "*********"
+    elif row["wallet_type"] == "Telebirr" and len(wallet_number) == 10:
+        masked_wallet = wallet_number[:2] + "********"
+    else:
+        masked_wallet = wallet_number
     return {
         "user_id": row["user_id"],
         "username": row["username"],
@@ -1909,7 +2069,7 @@ async def api_me(request: Request):
         "balance": float(row["balance"]),
         "verified": bool(row["verified"]),
         "wallet_type": row["wallet_type"],
-        "wallet_number": row["wallet_number"],
+        "wallet_number": masked_wallet,
         "wallet_suspicious": bool(row["wallet_suspicious"]),
     }
 
@@ -2074,7 +2234,15 @@ async def api_withdraw(request: Request):
     if error:
         return error
 
-    ok, result = create_withdrawal(int(user["id"]))
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    try:
+        requested_amount = float(body.get("amount", 0))
+    except Exception:
+        requested_amount = 0
+    ok, result = create_withdrawal(int(user["id"]), requested_amount)
 
     if not ok:
         return JSONResponse(
