@@ -100,16 +100,17 @@ async def set_menu_button():
     )
 
 
-async def send_message(chat_id: int, text: str):
-    return await telegram_request(
-        "sendMessage",
-        {
-            "chat_id": chat_id,
-            "text": text,
-            "parse_mode": "Markdown",
-            "disable_web_page_preview": True,
-        }
-    )
+async def send_message(chat_id: int, text: str, reply_markup: dict | None = None):
+    data = {
+        "chat_id": chat_id,
+        "text": text,
+        "parse_mode": "Markdown",
+        "disable_web_page_preview": True,
+    }
+    if reply_markup:
+        data["reply_markup"] = reply_markup
+
+    return await telegram_request("sendMessage", data)
 
 
 # =========================================================
@@ -261,7 +262,7 @@ html, body {
     z-index: -1;
 }
 
-/* Loading Screen */
+/* LOADING SCREEN (0% TO 100%) */
 #loadingScreen {
     position: fixed;
     inset: 0;
@@ -271,7 +272,7 @@ html, body {
     justify-content: center;
     background: #030712;
     z-index: 9999;
-    transition: opacity 0.4s ease, visibility 0.4s ease;
+    transition: opacity 0.5s ease, visibility 0.5s ease;
 }
 
 #loadingScreen.hide {
@@ -300,7 +301,32 @@ html, body {
     letter-spacing: 2px;
 }
 
-/* App Layout */
+.loader-container {
+    width: 75%;
+    max-width: 280px;
+    background: rgba(255, 255, 255, 0.08);
+    border-radius: 20px;
+    padding: 4px;
+    margin-top: 25px;
+    border: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.loader-bar {
+    width: 0%;
+    height: 12px;
+    background: linear-gradient(90deg, #2563eb, #38bdf8);
+    border-radius: 10px;
+    transition: width 0.05s linear;
+}
+
+.loading-text {
+    margin-top: 12px;
+    font-size: 14px;
+    color: #60a5fa;
+    font-weight: 700;
+}
+
+/* APP CONTENT */
 #appContent {
     display: none;
     padding: 20px 16px 30px;
@@ -340,7 +366,7 @@ html, body {
     margin-top: 4px;
 }
 
-/* Cards & Components */
+/* CARDS */
 .verify-card {
     padding: 20px;
     border-radius: 20px;
@@ -382,7 +408,7 @@ html, body {
     transition: width 0.4s ease;
 }
 
-/* Channel List */
+/* CHANNEL LIST */
 .channel-list {
     margin-top: 16px;
     display: flex;
@@ -465,23 +491,56 @@ html, body {
     opacity: 0.6;
 }
 
-/* Dashboard View */
+/* DASHBOARD VIEW */
 .dashboard {
     display: none;
-    text-align: center;
-    padding: 20px 0;
+    padding: 10px 0;
 }
 
 .dashboard.show {
     display: block;
 }
 
-.dash-card {
-    background: rgba(15, 23, 42, 0.8);
-    border: 1px solid rgba(255, 255, 255, 0.1);
+.balance-card {
+    background: linear-gradient(135deg, rgba(37, 99, 235, 0.2), rgba(15, 23, 42, 0.8));
+    border: 1px solid rgba(59, 130, 246, 0.3);
     border-radius: 20px;
-    padding: 30px 20px;
+    padding: 24px;
+    text-align: center;
+    box-shadow: 0 10px 30px rgba(0,0,0,0.3);
+}
+
+.balance-amount {
+    font-size: 32px;
+    font-weight: 900;
+    color: #38bdf8;
+    margin-top: 8px;
+}
+
+.grid-buttons {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 12px;
     margin-top: 20px;
+}
+
+.dash-btn {
+    background: rgba(15, 23, 42, 0.8);
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    border-radius: 16px;
+    padding: 18px 12px;
+    color: white;
+    font-size: 14px;
+    font-weight: 700;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 8px;
+    cursor: pointer;
+}
+
+.dash-btn-icon {
+    font-size: 24px;
 }
 
 @keyframes pulse {
@@ -495,10 +554,14 @@ html, body {
 <div class="app-bg"></div>
 <div class="glow"></div>
 
-<!-- LOADING SCREEN -->
+<!-- LOADING SCREEN WITH 0% TO 100% ANIMATION -->
 <div id="loadingScreen">
     <div class="falcon-loader">🦅</div>
     <div class="loading-title">FALCON WORLD</div>
+    <div class="loader-container">
+        <div id="loadingProgressBar" class="loader-bar"></div>
+    </div>
+    <div id="loadingProgressText" class="loading-text">0%</div>
 </div>
 
 <!-- MAIN CONTENT -->
@@ -507,7 +570,7 @@ html, body {
     <div class="brand">
         <div class="brand-icon">🦅</div>
         <div class="brand-title">FALCON WORLD</div>
-        <div class="brand-subtitle">Earn • Refer • Grow</div>
+        <div class="brand-subtitle">Earn • Refer • Withdraw</div>
     </div>
 
     <!-- VERIFICATION SECTION -->
@@ -515,11 +578,11 @@ html, body {
         <div class="verify-card">
             <div class="verify-title">🔐 REQUIRED CHANNELS</div>
             <div style="font-size: 13px; color: #94a3b8; margin-top: 4px;">
-                Join all required channels to access the bot main menu.
+                Join all required channels to unlock Falcon World dashboard.
             </div>
 
             <div class="progress-row">
-                <span>Progress</span>
+                <span>Verification Status</span>
                 <span id="progressCount" style="color: #60a5fa; font-weight: 800;">0/6</span>
             </div>
             <div class="progress-bar">
@@ -530,22 +593,38 @@ html, body {
         <div id="channelList" class="channel-list"></div>
 
         <button id="checkButton" class="check-button" onclick="checkMembership(true)">
-            🔄 Check Verification
+            🔄 Verify Membership
         </button>
     </div>
 
-    <!-- MAIN DASHBOARD (HIDDEN UNTIL VERIFIED) -->
+    <!-- MAIN DASHBOARD -->
     <div id="dashboard" class="dashboard">
-        <div style="font-size: 60px;">🎉</div>
-        <h2 style="font-size: 26px; font-weight: 900; margin-top: 10px;">WELCOME ABOARD!</h2>
-        <p style="color: #94a3b8; font-size: 14px;">Your verification was successful.</p>
-
-        <div class="dash-card">
-            <h3 style="margin: 0; color: #60a5fa;">🚀 Falcon Earning Dashboard</h3>
-            <p style="color: #64748b; font-size: 13px; margin-top: 10px;">
-                You now have full access to Falcon World tasks, daily rewards, and referrals!
-            </p>
+        
+        <div class="balance-card">
+            <div style="font-size: 13px; color: #94a3b8; font-weight: 700;">TOTAL BALANCE</div>
+            <div class="balance-amount">0.00 ETB</div>
+            <div style="font-size: 12px; color: #4ade80; margin-top: 4px;">● Account Verified</div>
         </div>
+
+        <div class="grid-buttons">
+            <button class="dash-btn" onclick="alert('Daily Bonus: +5.00 ETB Added!')">
+                <span class="dash-btn-icon">🎁</span>
+                <span>Daily Bonus</span>
+            </button>
+            <button class="dash-btn" onclick="alert('Your Referral Link: https://t.me/FalconWorld_Bot?start=12345')">
+                <span class="dash-btn-icon">👥</span>
+                <span>Referral</span>
+            </button>
+            <button class="dash-btn" onclick="alert('Minimum Withdrawal: 100 ETB via Telebirr/CBE')">
+                <span class="dash-btn-icon">💸</span>
+                <span>Withdraw</span>
+            </button>
+            <button class="dash-btn" onclick="alert('Tasks Section Loading...')">
+                <span class="dash-btn-icon">📋</span>
+                <span>Tasks</span>
+            </button>
+        </div>
+
     </div>
 
 </div>
@@ -556,6 +635,25 @@ tg.ready();
 tg.expand();
 
 let initData = tg.initData || "";
+
+function runLoadingAnimation(callback) {
+    let progress = 0;
+    const bar = document.getElementById("loadingProgressBar");
+    const text = document.getElementById("loadingProgressText");
+
+    const interval = setInterval(() => {
+        progress += 2;
+        if (progress > 100) progress = 100;
+        
+        bar.style.width = progress + "%";
+        text.innerText = progress + "%";
+
+        if (progress >= 100) {
+            clearInterval(interval);
+            setTimeout(callback, 300);
+        }
+    }, 25);
+}
 
 function openChannel(url) {
     try {
@@ -601,7 +699,7 @@ async function checkMembership(userClicked = false) {
     } finally {
         if (userClicked) {
             btn.disabled = false;
-            btn.innerText = "🔄 Check Verification";
+            btn.innerText = "🔄 Verify Membership";
         }
     }
 }
@@ -659,12 +757,12 @@ window.addEventListener("focus", () => {
     checkMembership(false);
 });
 
-// App Start
-setTimeout(() => {
+// App Start Workflow
+runLoadingAnimation(() => {
     document.getElementById("loadingScreen").classList.add("hide");
     document.getElementById("appContent").classList.add("show");
     checkMembership(false);
-}, 1500);
+});
 
 </script>
 </body>
@@ -701,17 +799,30 @@ async def webhook(request: Request):
         return {"ok": True}
 
     if text.startswith("/start"):
-        welcome_message = """
-🦅 *WELCOME TO FALCON WORLD*
+        welcome_message = """🦅 *WELCOME TO FALCON WORLD*
 
 💰 *Earn & Complete Tasks*
 🎁 *Daily Rewards*
 👥 *Referral Rewards*
 🚀 *New Opportunities*
 
-🚀 Open Falcon World using the button below to complete verification and enter!
-"""
-        await send_message(chat_id, welcome_message)
+📢 *Ads & Promotions:* Contact us
+💱 *USDT Exchange:* Buy & Sell
+
+🚀 Open Falcon World from the Menu below."""
+
+        reply_markup = {
+            "inline_keyboard": [
+                [
+                    {
+                        "text": "🚀 Open Falcon World",
+                        "web_app": {"url": MINI_APP_URL}
+                    }
+                ]
+            ]
+        }
+
+        await send_message(chat_id, welcome_message, reply_markup=reply_markup)
 
     return {"ok": True}
 
