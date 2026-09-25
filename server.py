@@ -1,13 +1,19 @@
 import os
+import json
+import hmac
+import hashlib
+import time
+import asyncio
+from urllib.parse import parse_qsl
+
 import httpx
 from fastapi import FastAPI, Request
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, JSONResponse
 
-app = FastAPI()
 
-# ==============================
-# CONFIGURATION
-# ==============================
+# =========================================================
+# CONFIG
+# =========================================================
 
 BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip()
 ADMIN_ID = os.getenv("ADMIN_ID", "").strip()
@@ -20,44 +26,81 @@ MINI_APP_URL = "https://falcon-world.onrender.com/app"
 TELEGRAM_API = f"https://api.telegram.org/bot{BOT_TOKEN}"
 
 
-# ==============================
+# =========================================================
+# REQUIRED CHANNELS
+# =========================================================
+
+REQUIRED_CHANNELS = [
+    {
+        "username": "@Sheger_tech1",
+        "name": "Sheger Tech",
+        "url": "https://t.me/Sheger_tech1",
+    },
+    {
+        "username": "@EthioVortex1",
+        "name": "Ethio Vortex",
+        "url": "https://t.me/EthioVortex1",
+    },
+    {
+        "username": "@ethiocashflow",
+        "name": "Ethio Cash Flow",
+        "url": "https://t.me/ethiocashflow",
+    },
+    {
+        "username": "@AmanIncomeLab",
+        "name": "Aman Income Lab",
+        "url": "https://t.me/AmanIncomeLab",
+    },
+    {
+        "username": "@OnlineIncomeHub07",
+        "name": "Online Income Hub",
+        "url": "https://t.me/OnlineIncomeHub07",
+    },
+    {
+        "username": "@Paymentprooff2",
+        "name": "Payment Proof",
+        "url": "https://t.me/Paymentprooff2",
+    },
+]
+
+
+# =========================================================
+# FASTAPI
+# =========================================================
+
+app = FastAPI()
+
+
+# =========================================================
 # TELEGRAM API HELPER
-# ==============================
+# =========================================================
 
-async def telegram_request(method: str, data: dict):
-    async with httpx.AsyncClient(timeout=20) as client:
-        response = await client.post(
-            f"{TELEGRAM_API}/{method}",
-            json=data
-        )
-
-        try:
-            return response.json()
-        except Exception:
-            return {
-                "ok": False,
-                "description": response.text
-            }
-
-
-# ==============================
-# SEND MESSAGE
-# ==============================
-
-async def send_message(chat_id: int, text: str):
-    return await telegram_request(
-        "sendMessage",
-        {
-            "chat_id": chat_id,
-            "text": text,
-            "parse_mode": "Markdown"
+async def telegram_request(method: str, data: dict | None = None):
+    if not BOT_TOKEN:
+        return {
+            "ok": False,
+            "description": "BOT_TOKEN is missing"
         }
-    )
+
+    try:
+        async with httpx.AsyncClient(timeout=20) as client:
+            response = await client.post(
+                f"{TELEGRAM_API}/{method}",
+                json=data or {}
+            )
+
+            return response.json()
+
+    except Exception as e:
+        return {
+            "ok": False,
+            "description": str(e)
+        }
 
 
-# ==============================
+# =========================================================
 # MENU BUTTON
-# ==============================
+# =========================================================
 
 async def set_menu_button():
     return await telegram_request(
@@ -74,1032 +117,1674 @@ async def set_menu_button():
     )
 
 
-# ==============================
-# STARTUP
-# ==============================
+# =========================================================
+# SEND MESSAGE
+# =========================================================
 
-@app.on_event("startup")
-async def startup():
-
-    if not BOT_TOKEN:
-        print("ERROR: BOT_TOKEN is missing.")
-        return
-
-    # Set webhook
-    webhook_result = await telegram_request(
-        "setWebhook",
+async def send_message(chat_id: int, text: str):
+    return await telegram_request(
+        "sendMessage",
         {
-            "url": WEBHOOK_URL,
-            "allowed_updates": [
-                "message"
-            ]
+            "chat_id": chat_id,
+            "text": text,
+            "parse_mode": "Markdown",
+            "disable_web_page_preview": True,
         }
     )
 
-    print("Webhook setup:", webhook_result)
 
-    # Set menu button
-    menu_result = await set_menu_button()
+# =========================================================
+# TELEGRAM WEB APP INIT DATA VALIDATION
+# =========================================================
 
-    print("Menu button setup:", menu_result)
+def validate_init_data(init_data: str):
+    """
+    Validates Telegram Mini App initData using Telegram's
+    official HMAC verification method.
+
+    Returns:
+        user dict if valid
+        None if invalid
+    """
+
+    if not init_data or not BOT_TOKEN:
+        return None
+
+    try:
+        parsed = dict(parse_qsl(init_data, keep_blank_values=True))
+
+        received_hash = parsed.pop("hash", None)
+
+        if not received_hash:
+            return None
+
+        data_check_string = "\n".join(
+            f"{key}={parsed[key]}"
+            for key in sorted(parsed.keys())
+        )
+
+        secret_key = hmac.new(
+            b"WebAppData",
+            BOT_TOKEN.encode(),
+            hashlib.sha256
+        ).digest()
+
+        calculated_hash = hmac.new(
+            secret_key,
+            data_check_string.encode(),
+            hashlib.sha256
+        ).hexdigest()
+
+        if not hmac.compare_digest(
+            calculated_hash,
+            received_hash
+        ):
+            return None
+
+        # Check auth_date so very old initData is rejected.
+        auth_date = int(parsed.get("auth_date", "0"))
+
+        if auth_date <= 0:
+            return None
+
+        # 24 hours
+        if time.time() - auth_date > 86400:
+            return None
+
+        user_json = parsed.get("user")
+
+        if not user_json:
+            return None
+
+        user = json.loads(user_json)
+
+        if not user.get("id"):
+            return None
+
+        return user
+
+    except Exception:
+        return None
 
 
-# ==============================
+# =========================================================
+# CHECK ONE CHANNEL
+# =========================================================
+
+async def check_channel_membership(
+    user_id: int,
+    channel_username: str
+):
+    result = await telegram_request(
+        "getChatMember",
+        {
+            "chat_id": channel_username,
+            "user_id": user_id,
+        }
+    )
+
+    if not result.get("ok"):
+        return False
+
+    member = result.get("result", {})
+    status = member.get("status")
+
+    return status in {
+        "member",
+        "administrator",
+        "creator",
+    }
+
+
+# =========================================================
+# CHECK ALL 6 CHANNELS
+# =========================================================
+
+async def check_all_channels(user_id: int):
+
+    async def check(channel):
+        joined = await check_channel_membership(
+            user_id,
+            channel["username"]
+        )
+
+        return {
+            **channel,
+            "joined": joined,
+        }
+
+    results = await asyncio.gather(
+        *(check(channel) for channel in REQUIRED_CHANNELS)
+    )
+
+    verified_count = sum(
+        1 for channel in results
+        if channel["joined"]
+    )
+
+    verified = verified_count == len(REQUIRED_CHANNELS)
+
+    return {
+        "verified": verified,
+        "verified_count": verified_count,
+        "total": len(REQUIRED_CHANNELS),
+        "channels": results,
+    }
+
+
+# =========================================================
 # HOME
-# ==============================
+# =========================================================
 
 @app.get("/")
 async def home():
     return {
         "status": "online",
-        "bot": "Falcon World"
+        "app": "Falcon World"
     }
 
 
-# ==============================
-# HEALTH CHECK
-# ==============================
+# =========================================================
+# HEALTH
+# =========================================================
 
 @app.get("/health")
 async def health():
     return {
-        "status": "healthy"
+        "status": "ok"
     }
 
 
-# ==============================
+# =========================================================
 # MINI APP
-# ==============================
+# =========================================================
 
 @app.get("/app", response_class=HTMLResponse)
 async def mini_app():
 
-    return """
+    html = r"""
 <!DOCTYPE html>
-
 <html lang="en">
 
 <head>
 
-    <meta charset="UTF-8">
+<meta charset="UTF-8">
+
+<meta
+    name="viewport"
+    content="width=device-width,
+    initial-scale=1.0,
+    maximum-scale=1.0,
+    user-scalable=no"
+>
+
+<title>Falcon World</title>
+
+<script src="https://telegram.org/js/telegram-web-app.js"></script>
+
+<style>
+
+* {
+    box-sizing: border-box;
+    -webkit-tap-highlight-color: transparent;
+}
+
+html,
+body {
+    margin: 0;
+    padding: 0;
+    width: 100%;
+    min-height: 100%;
+    background: #050914;
+    color: white;
+    font-family:
+        -apple-system,
+        BlinkMacSystemFont,
+        "Segoe UI",
+        Roboto,
+        Arial,
+        sans-serif;
+}
+
+body {
+    overflow-x: hidden;
+}
+
+/* =====================================================
+   BACKGROUND
+===================================================== */
+
+.app-bg {
+    position: fixed;
+    inset: 0;
+    z-index: -2;
+
+    background:
+        radial-gradient(
+            circle at 50% 0%,
+            rgba(37, 99, 235, 0.28),
+            transparent 42%
+        ),
+        radial-gradient(
+            circle at 100% 100%,
+            rgba(14, 165, 233, 0.12),
+            transparent 40%
+        ),
+        #050914;
+}
 
-    <meta
-        name="viewport"
-        content="width=device-width,
-        initial-scale=1.0,
-        maximum-scale=1.0,
-        user-scalable=no"
-    >
+.glow {
+    position: fixed;
+    width: 280px;
+    height: 280px;
+    border-radius: 50%;
 
-    <title>Falcon World</title>
+    background: rgba(37, 99, 235, 0.10);
 
+    filter: blur(70px);
 
-    <style>
+    top: -100px;
+    left: 50%;
 
-        /* =========================
-           RESET
-        ========================= */
+    transform: translateX(-50%);
 
-        * {
-            margin: 0;
-            padding: 0;
-            box-sizing: border-box;
-        }
+    z-index: -1;
+}
 
 
-        /* =========================
-           BODY
-        ========================= */
+/* =====================================================
+   LOADING SCREEN
+===================================================== */
 
-        body {
+#loadingScreen {
 
-            width: 100%;
-            min-height: 100vh;
+    position: fixed;
+    inset: 0;
 
-            overflow-x: hidden;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
 
-            background:
-                radial-gradient(
-                    circle at 50% -10%,
-                    #234f80 0%,
-                    #102944 25%,
-                    #071321 55%,
-                    #030811 100%
-                );
+    background:
+        radial-gradient(
+            circle at center,
+            rgba(30, 64, 175, 0.28),
+            transparent 45%
+        ),
+        #050914;
 
-            color: #ffffff;
+    z-index: 9999;
 
-            font-family:
-                -apple-system,
-                BlinkMacSystemFont,
-                "Segoe UI",
-                Roboto,
-                Arial,
-                sans-serif;
-        }
+    transition:
+        opacity 0.55s ease,
+        visibility 0.55s ease;
+}
 
+#loadingScreen.hide {
+    opacity: 0;
+    visibility: hidden;
+}
 
-        /* =========================
-           APP
-        ========================= */
+.falcon-loader {
 
-        .app {
+    width: 108px;
+    height: 108px;
 
-            width: 100%;
-            max-width: 480px;
+    border-radius: 32px;
 
-            min-height: 100vh;
+    display: flex;
+    align-items: center;
+    justify-content: center;
 
-            margin: 0 auto;
+    font-size: 52px;
 
-            position: relative;
+    background:
+        linear-gradient(
+            145deg,
+            rgba(59,130,246,0.28),
+            rgba(15,23,42,0.85)
+        );
 
-            overflow: hidden;
-        }
+    border:
+        1px solid rgba(148,163,184,0.22);
 
+    box-shadow:
+        0 0 45px rgba(37,99,235,0.28),
+        inset 0 1px 0 rgba(255,255,255,0.08);
 
-        /* =========================
-           BACKGROUND LIGHT
-        ========================= */
+    animation:
+        falconPulse 1.5s ease-in-out infinite;
+}
 
-        .light {
+.loader-ring {
 
-            position: fixed;
+    width: 128px;
+    height: 128px;
 
-            width: 260px;
-            height: 260px;
+    border-radius: 50%;
 
-            border-radius: 50%;
+    border:
+        2px solid rgba(59,130,246,0.12);
 
-            background:
-                radial-gradient(
-                    circle,
-                    rgba(64, 166, 255, 0.20),
-                    transparent 70%
-                );
+    border-top-color: #60a5fa;
 
-            top: -120px;
-            left: 50%;
+    position: absolute;
 
-            transform: translateX(-50%);
+    animation:
+        spin 1.2s linear infinite;
+}
 
-            pointer-events: none;
-        }
+.loading-title {
 
+    margin-top: 28px;
 
-        /* =========================
-           LOADING SCREEN
-        ========================= */
+    font-size: 24px;
+    font-weight: 800;
 
-        #loadingScreen {
+    letter-spacing: 2px;
+}
 
-            position: fixed;
+.loading-subtitle {
 
-            inset: 0;
+    margin-top: 8px;
 
-            z-index: 9999;
+    font-size: 13px;
 
-            display: flex;
+    color: #94a3b8;
 
-            justify-content: center;
-            align-items: center;
+    letter-spacing: 0.5px;
+}
 
-            background:
-                radial-gradient(
-                    circle at center,
-                    #15375b 0%,
-                    #081625 45%,
-                    #03070d 100%
-                );
+.loading-dots {
 
-            transition:
-                opacity 0.7s ease,
-                visibility 0.7s ease;
-        }
+    margin-top: 18px;
 
+    font-size: 18px;
 
-        #loadingScreen.hide {
+    letter-spacing: 5px;
 
-            opacity: 0;
+    color: #60a5fa;
 
-            visibility: hidden;
-        }
+    animation: dots 1.2s infinite;
+}
 
 
-        .loaderContent {
+/* =====================================================
+   MAIN APP
+===================================================== */
 
-            width: 100%;
+#appContent {
 
-            text-align: center;
+    display: none;
 
-            padding: 30px;
-        }
+    min-height: 100vh;
 
+    padding:
+        22px
+        16px
+        30px;
+}
 
-        /* =========================
-           FALCON LOGO
-        ========================= */
+#appContent.show {
+    display: block;
+}
 
-        .logoWrap {
 
-            width: 125px;
-            height: 125px;
+/* =====================================================
+   TOP BRAND
+===================================================== */
 
-            margin: 0 auto 25px;
+.brand {
 
-            position: relative;
+    text-align: center;
 
-            display: flex;
+    margin-top: 8px;
+    margin-bottom: 24px;
+}
 
-            align-items: center;
-            justify-content: center;
+.brand-icon {
 
-            border-radius: 50%;
+    width: 58px;
+    height: 58px;
 
-            background:
-                radial-gradient(
-                    circle,
-                    rgba(47, 147, 255, 0.16),
-                    rgba(47, 147, 255, 0.03) 65%,
-                    transparent 70%
-                );
+    margin: auto;
 
-            box-shadow:
-                0 0 35px rgba(44, 157, 255, 0.25);
-        }
+    border-radius: 19px;
 
+    display: flex;
+    align-items: center;
+    justify-content: center;
 
-        .logoRing {
+    font-size: 29px;
 
-            position: absolute;
+    background:
+        linear-gradient(
+            145deg,
+            rgba(59,130,246,0.26),
+            rgba(15,23,42,0.88)
+        );
 
-            inset: 0;
+    border:
+        1px solid rgba(148,163,184,0.20);
 
-            border-radius: 50%;
+    box-shadow:
+        0 10px 35px rgba(37,99,235,0.18);
+}
 
-            border: 2px solid rgba(93, 190, 255, 0.18);
+.brand-title {
 
-            border-top-color: #4db7ff;
-            border-right-color: #4db7ff;
+    margin-top: 13px;
 
-            animation:
-                spin 1.8s linear infinite;
-        }
+    font-size: 23px;
 
+    font-weight: 850;
 
-        .logoRing2 {
+    letter-spacing: 2px;
+}
 
-            position: absolute;
+.brand-subtitle {
 
-            inset: 9px;
+    margin-top: 6px;
 
-            border-radius: 50%;
+    color: #94a3b8;
 
-            border: 1px solid rgba(255,255,255,0.10);
+    font-size: 12px;
+}
 
-            animation:
-                spinReverse 3s linear infinite;
-        }
 
+/* =====================================================
+   VERIFICATION HEADER
+===================================================== */
 
-        .eagle {
+.verify-card {
 
-            font-size: 65px;
+    padding: 21px;
 
-            line-height: 1;
+    border-radius: 24px;
 
-            filter:
-                drop-shadow(
-                    0 0 14px
-                    rgba(74, 178, 255, 0.45)
-                );
+    background:
+        linear-gradient(
+            145deg,
+            rgba(15,23,42,0.92),
+            rgba(15,23,42,0.66)
+        );
 
-            animation:
-                eagleFloat 2s ease-in-out infinite;
-        }
+    border:
+        1px solid rgba(148,163,184,0.15);
 
+    box-shadow:
+        0 18px 45px rgba(0,0,0,0.25);
 
-        /* =========================
-           BRAND
-        ========================= */
+    backdrop-filter: blur(18px);
+}
 
-        .brand {
+.verify-title {
 
-            font-size: 30px;
+    font-size: 20px;
 
-            font-weight: 900;
+    font-weight: 800;
 
-            letter-spacing: 4px;
+    margin-bottom: 8px;
+}
 
-            margin-bottom: 9px;
+.verify-description {
 
-            text-shadow:
-                0 0 18px
-                rgba(84, 183, 255, 0.25);
-        }
+    color: #94a3b8;
 
+    line-height: 1.55;
 
-        .tagline {
+    font-size: 13px;
+}
 
-            color: #9eb0c5;
+.progress-row {
 
-            font-size: 14px;
+    display: flex;
 
-            letter-spacing: 0.8px;
-        }
+    align-items: center;
 
+    justify-content: space-between;
 
-        /* =========================
-           LOADING
-        ========================= */
+    margin-top: 18px;
 
-        .loadingArea {
+    font-size: 12px;
 
-            margin-top: 42px;
-        }
+    color: #94a3b8;
+}
 
+.progress-count {
 
-        .loadingText {
+    color: #60a5fa;
 
-            color: #b9c7d7;
+    font-weight: 800;
+}
 
-            font-size: 13px;
+.progress-bar {
 
-            margin-bottom: 12px;
-        }
+    width: 100%;
+    height: 7px;
 
+    margin-top: 9px;
 
-        .dots span {
+    border-radius: 99px;
 
-            display: inline-block;
+    background: rgba(148,163,184,0.10);
 
-            width: 6px;
-            height: 6px;
+    overflow: hidden;
+}
 
-            margin: 0 3px;
+.progress-fill {
 
-            border-radius: 50%;
+    width: 0%;
 
-            background: #53baff;
+    height: 100%;
 
-            opacity: 0.25;
+    border-radius: inherit;
 
-            animation:
-                dotPulse 1.2s infinite;
-        }
+    background:
+        linear-gradient(
+            90deg,
+            #2563eb,
+            #38bdf8
+        );
 
+    transition: width 0.4s ease;
+}
 
-        .dots span:nth-child(2) {
-            animation-delay: 0.2s;
-        }
 
+/* =====================================================
+   CHANNEL LIST
+===================================================== */
 
-        .dots span:nth-child(3) {
-            animation-delay: 0.4s;
-        }
+.channel-list {
 
+    margin-top: 17px;
 
-        /* =========================
-           MAIN SCREEN
-        ========================= */
+    display: flex;
 
-        #mainScreen {
+    flex-direction: column;
 
-            min-height: 100vh;
+    gap: 10px;
+}
 
-            padding: 24px 18px 30px;
+.channel-card {
 
-            opacity: 0;
+    display: flex;
 
-            transform: translateY(12px);
+    align-items: center;
 
-            animation:
-                mainAppear 0.8s ease forwards;
+    gap: 12px;
 
-            animation-delay: 0.2s;
-        }
+    padding: 13px;
 
+    border-radius: 18px;
 
-        .topBar {
+    background:
+        rgba(15,23,42,0.72);
 
-            display: flex;
+    border:
+        1px solid rgba(148,163,184,0.12);
 
-            align-items: center;
+    transition:
+        transform 0.2s ease,
+        border-color 0.2s ease;
+}
 
-            justify-content: space-between;
+.channel-card:active {
+    transform: scale(0.985);
+}
 
-            padding-top: 8px;
-        }
+.channel-icon {
 
+    width: 43px;
+    height: 43px;
 
-        .miniBrand {
+    flex-shrink: 0;
 
-            display: flex;
+    border-radius: 14px;
 
-            align-items: center;
+    display: flex;
+    align-items: center;
+    justify-content: center;
 
-            gap: 10px;
-        }
+    font-size: 20px;
 
+    background:
+        rgba(37,99,235,0.15);
 
-        .miniLogo {
+    border:
+        1px solid rgba(59,130,246,0.14);
+}
 
-            width: 43px;
-            height: 43px;
+.channel-info {
 
-            display: flex;
+    min-width: 0;
 
-            align-items: center;
-            justify-content: center;
+    flex: 1;
+}
 
-            border-radius: 14px;
+.channel-name {
 
-            background:
-                linear-gradient(
-                    145deg,
-                    rgba(66, 169, 255, 0.25),
-                    rgba(66, 169, 255, 0.06)
-                );
+    font-size: 14px;
 
-            border:
-                1px solid
-                rgba(106, 194, 255, 0.16);
+    font-weight: 700;
 
-            font-size: 24px;
-        }
+    white-space: nowrap;
 
+    overflow: hidden;
 
-        .miniName {
+    text-overflow: ellipsis;
+}
 
-            font-size: 16px;
+.channel-username {
 
-            font-weight: 800;
+    margin-top: 3px;
 
-            letter-spacing: 1px;
-        }
+    color: #64748b;
 
+    font-size: 11px;
+}
 
-        .miniStatus {
+.channel-button {
 
-            font-size: 11px;
+    border: 0;
 
-            color: #59df9a;
+    min-width: 72px;
 
-            margin-top: 3px;
-        }
+    padding: 9px 12px;
 
+    border-radius: 12px;
 
-        /* =========================
-           HERO CARD
-        ========================= */
+    background:
+        linear-gradient(
+            135deg,
+            #2563eb,
+            #3b82f6
+        );
 
-        .hero {
+    color: white;
 
-            margin-top: 25px;
+    font-size: 12px;
 
-            padding: 25px 21px;
+    font-weight: 800;
 
-            border-radius: 24px;
+    cursor: pointer;
+}
 
-            background:
-                linear-gradient(
-                    145deg,
-                    rgba(38, 88, 139, 0.28),
-                    rgba(10, 25, 42, 0.58)
-                );
+.channel-button.joined {
 
-            border:
-                1px solid
-                rgba(112, 190, 255, 0.12);
+    background:
+        rgba(34,197,94,0.12);
 
-            box-shadow:
-                0 20px 60px
-                rgba(0, 0, 0, 0.25);
+    color: #4ade80;
 
-            position: relative;
+    border:
+        1px solid rgba(74,222,128,0.16);
 
-            overflow: hidden;
-        }
+    cursor: default;
+}
 
 
-        .hero::after {
+/* =====================================================
+   CHECK BUTTON
+===================================================== */
 
-            content: "";
+.check-button {
 
-            position: absolute;
+    width: 100%;
 
-            width: 160px;
-            height: 160px;
+    margin-top: 16px;
 
-            right: -70px;
-            top: -70px;
+    padding: 14px;
 
-            border-radius: 50%;
+    border: 0;
 
-            background:
-                radial-gradient(
-                    circle,
-                    rgba(60, 173, 255, 0.16),
-                    transparent 70%
-                );
-        }
+    border-radius: 16px;
 
+    color: white;
 
-        .heroSmall {
+    background:
+        linear-gradient(
+            135deg,
+            #2563eb,
+            #0284c7
+        );
 
-            color: #7fcaff;
+    font-size: 14px;
 
-            font-size: 12px;
+    font-weight: 800;
 
-            font-weight: 700;
+    box-shadow:
+        0 10px 28px rgba(37,99,235,0.20);
 
-            letter-spacing: 1.5px;
+    cursor: pointer;
+}
 
-            margin-bottom: 9px;
-        }
+.check-button:disabled {
 
+    opacity: 0.55;
 
-        .heroTitle {
+    cursor: default;
+}
 
-            font-size: 25px;
 
-            font-weight: 850;
+/* =====================================================
+   SUCCESS
+===================================================== */
 
-            line-height: 1.25;
-        }
+.success-screen {
 
+    display: none;
 
-        .heroText {
+    text-align: center;
 
-            margin-top: 9px;
+    padding: 38px 20px;
+}
 
-            color: #9eafc2;
+.success-screen.show {
+    display: block;
+}
 
-            font-size: 13px;
+.success-icon {
 
-            line-height: 1.6;
-        }
+    width: 84px;
+    height: 84px;
 
+    margin: auto;
 
-        /* =========================
-           QUICK CARDS
-        ========================= */
+    border-radius: 50%;
 
-        .sectionTitle {
+    display: flex;
+    align-items: center;
+    justify-content: center;
 
-            margin-top: 26px;
+    font-size: 38px;
 
-            margin-bottom: 12px;
+    background:
+        rgba(34,197,94,0.12);
 
-            font-size: 14px;
+    border:
+        1px solid rgba(74,222,128,0.20);
 
-            font-weight: 750;
+    box-shadow:
+        0 0 45px rgba(34,197,94,0.12);
 
-            color: #dce8f4;
-        }
+    animation:
+        successPop 0.55s ease;
+}
 
+.success-title {
 
-        .grid {
+    margin-top: 22px;
 
-            display: grid;
+    font-size: 24px;
 
-            grid-template-columns:
-                repeat(2, 1fr);
+    font-weight: 850;
+}
 
-            gap: 12px;
-        }
+.success-text {
 
+    margin-top: 8px;
 
-        .feature {
+    color: #94a3b8;
 
-            padding: 18px;
+    font-size: 13px;
 
-            min-height: 105px;
+    line-height: 1.5;
+}
 
-            border-radius: 19px;
 
-            background:
-                rgba(255,255,255,0.045);
+/* =====================================================
+   DASHBOARD PLACEHOLDER
+===================================================== */
 
-            border:
-                1px solid
-                rgba(255,255,255,0.07);
+.dashboard {
 
-            transition:
-                transform 0.2s ease,
-                background 0.2s ease;
-        }
+    display: none;
 
+    text-align: center;
 
-        .feature:active {
+    padding-top: 15px;
+}
 
-            transform: scale(0.97);
+.dashboard.show {
+    display: block;
+}
 
-            background:
-                rgba(255,255,255,0.08);
-        }
+.dashboard-title {
 
+    font-size: 25px;
 
-        .featureIcon {
+    font-weight: 850;
 
-            font-size: 25px;
+    letter-spacing: 1px;
+}
 
-            margin-bottom: 10px;
-        }
+.dashboard-subtitle {
 
+    margin-top: 7px;
 
-        .featureTitle {
+    color: #94a3b8;
 
-            font-size: 14px;
+    font-size: 13px;
+}
 
-            font-weight: 750;
-        }
+.dashboard-box {
 
+    margin-top: 25px;
 
-        .featureText {
+    padding: 25px 18px;
 
-            margin-top: 5px;
+    border-radius: 22px;
 
-            color: #8192a5;
+    background:
+        rgba(15,23,42,0.75);
 
-            font-size: 11px;
-        }
+    border:
+        1px solid rgba(148,163,184,0.13);
+}
 
+.dashboard-box-title {
 
-        /* =========================
-           FOOTER
-        ========================= */
+    font-size: 18px;
 
-        .footer {
+    font-weight: 800;
+}
 
-            text-align: center;
+.dashboard-box-text {
 
-            margin-top: 30px;
+    margin-top: 8px;
 
-            color: #526275;
+    color: #64748b;
 
-            font-size: 11px;
+    font-size: 12px;
 
-            letter-spacing: 0.5px;
-        }
+    line-height: 1.5;
+}
 
 
-        /* =========================
-           ANIMATIONS
-        ========================= */
+/* =====================================================
+   ANIMATIONS
+===================================================== */
 
-        @keyframes spin {
+@keyframes spin {
 
-            from {
-                transform: rotate(0deg);
-            }
+    to {
+        transform: rotate(360deg);
+    }
+}
 
-            to {
-                transform: rotate(360deg);
-            }
-        }
+@keyframes falconPulse {
 
+    0%, 100% {
+        transform: scale(1);
+    }
 
-        @keyframes spinReverse {
+    50% {
+        transform: scale(1.06);
+    }
+}
 
-            from {
-                transform: rotate(360deg);
-            }
+@keyframes dots {
 
-            to {
-                transform: rotate(0deg);
-            }
-        }
+    0%, 100% {
+        opacity: 0.35;
+    }
 
+    50% {
+        opacity: 1;
+    }
+}
 
-        @keyframes eagleFloat {
+@keyframes successPop {
 
-            0%, 100% {
-                transform: translateY(0);
-            }
+    0% {
+        transform: scale(0.5);
+        opacity: 0;
+    }
 
-            50% {
-                transform: translateY(-7px);
-            }
-        }
+    100% {
+        transform: scale(1);
+        opacity: 1;
+    }
+}
 
-
-        @keyframes dotPulse {
-
-            0%, 100% {
-                opacity: 0.2;
-                transform: scale(0.8);
-            }
-
-            50% {
-                opacity: 1;
-                transform: scale(1.2);
-            }
-        }
-
-
-        @keyframes mainAppear {
-
-            from {
-                opacity: 0;
-                transform: translateY(12px);
-            }
-
-            to {
-                opacity: 1;
-                transform: translateY(0);
-            }
-        }
-
-
-        /* =========================
-           SMALL PHONES
-        ========================= */
-
-        @media (max-width: 360px) {
-
-            .brand {
-                font-size: 26px;
-            }
-
-            .heroTitle {
-                font-size: 22px;
-            }
-
-            .feature {
-                padding: 15px;
-            }
-        }
-
-    </style>
+</style>
 
 </head>
 
 
 <body>
 
+<div class="app-bg"></div>
+<div class="glow"></div>
 
-    <!-- =========================
-         LOADING SCREEN
-    ========================== -->
 
-    <div id="loadingScreen">
+<!-- ===================================================
+     LOADING SCREEN
+=================================================== -->
 
-        <div class="loaderContent">
+<div id="loadingScreen">
 
-            <div class="logoWrap">
+    <div style="position:relative;">
 
-                <div class="logoRing"></div>
+        <div class="loader-ring"></div>
 
-                <div class="logoRing2"></div>
+        <div class="falcon-loader">
+            🦅
+        </div>
 
-                <div class="eagle">
-                    🦅
-                </div>
+    </div>
+
+    <div class="loading-title">
+        FALCON WORLD
+    </div>
+
+    <div class="loading-subtitle">
+        Preparing your experience
+    </div>
+
+    <div class="loading-dots">
+        • • •
+    </div>
+
+</div>
+
+
+<!-- ===================================================
+     APP CONTENT
+=================================================== -->
+
+<div id="appContent">
+
+    <div class="brand">
+
+        <div class="brand-icon">
+            🦅
+        </div>
+
+        <div class="brand-title">
+            FALCON WORLD
+        </div>
+
+        <div class="brand-subtitle">
+            Earn. Refer. Grow.
+        </div>
+
+    </div>
+
+
+    <!-- =================================================
+         VERIFICATION AREA
+    ================================================== -->
+
+    <div id="verificationArea">
+
+        <div class="verify-card">
+
+            <div class="verify-title">
+                🔐 VERIFY & UNLOCK
+            </div>
+
+            <div class="verify-description">
+                Join all required channels to unlock
+                Falcon World and continue.
+            </div>
+
+            <div class="progress-row">
+
+                <span>
+                    Verification progress
+                </span>
+
+                <span
+                    id="progressCount"
+                    class="progress-count"
+                >
+                    0/6
+                </span>
 
             </div>
 
+            <div class="progress-bar">
 
-            <div class="brand">
-                FALCON WORLD
+                <div
+                    id="progressFill"
+                    class="progress-fill"
+                ></div>
+
             </div>
 
+        </div>
 
-            <div class="tagline">
-                Earn. Refer. Grow.
+
+        <div
+            id="channelList"
+            class="channel-list"
+        ></div>
+
+
+        <button
+            id="checkButton"
+            class="check-button"
+            onclick="checkMembership()"
+        >
+            🔄 Check Verification
+        </button>
+
+    </div>
+
+
+    <!-- =================================================
+         SUCCESS
+    ================================================== -->
+
+    <div
+        id="successScreen"
+        class="success-screen"
+    >
+
+        <div class="success-icon">
+            ✓
+        </div>
+
+        <div class="success-title">
+            Verification Complete
+        </div>
+
+        <div class="success-text">
+            All required channels have been verified.
+            Welcome to Falcon World.
+        </div>
+
+    </div>
+
+
+    <!-- =================================================
+         DASHBOARD
+    ================================================== -->
+
+    <div
+        id="dashboard"
+        class="dashboard"
+    >
+
+        <div class="dashboard-title">
+            FALCON WORLD
+        </div>
+
+        <div class="dashboard-subtitle">
+            Earn. Refer. Withdraw.
+        </div>
+
+        <div class="dashboard-box">
+
+            <div class="dashboard-box-title">
+                🚀 You're In
             </div>
 
-
-            <div class="loadingArea">
-
-                <div class="loadingText">
-                    Preparing your experience
-                </div>
-
-                <div class="dots">
-
-                    <span></span>
-                    <span></span>
-                    <span></span>
-
-                </div>
-
+            <div class="dashboard-box-text">
+                Your verification is complete.
+                The Falcon World earning dashboard
+                will be available in the next stage.
             </div>
 
         </div>
 
     </div>
 
+</div>
 
-    <!-- =========================
-         MAIN APP
-    ========================== -->
 
-    <main id="mainScreen">
+<script>
 
-        <div class="light"></div>
+/* =====================================================
+   TELEGRAM
+===================================================== */
 
+const tg = window.Telegram.WebApp;
 
-        <!-- TOP BAR -->
+tg.ready();
+tg.expand();
 
-        <div class="topBar">
 
-            <div class="miniBrand">
+/* =====================================================
+   GLOBAL
+===================================================== */
 
-                <div class="miniLogo">
-                    🦅
-                </div>
+let initData = "";
+let userId = null;
 
-                <div>
+let currentChannels = [];
 
-                    <div class="miniName">
-                        FALCON WORLD
-                    </div>
 
-                    <div class="miniStatus">
-                        ● Online
-                    </div>
+/* =====================================================
+   GET TELEGRAM USER
+===================================================== */
 
-                </div>
+function initializeTelegram() {
 
-            </div>
+    initData = tg.initData || "";
 
-        </div>
+    if (
+        tg.initDataUnsafe &&
+        tg.initDataUnsafe.user
+    ) {
+        userId =
+            tg.initDataUnsafe.user.id;
+    }
 
+}
 
-        <!-- HERO -->
 
-        <section class="hero">
+/* =====================================================
+   OPEN CHANNEL
+===================================================== */
 
-            <div class="heroSmall">
-                WELCOME
-            </div>
+function openChannel(url) {
 
-            <div class="heroTitle">
-                Your digital earning
-                journey starts here.
-            </div>
+    try {
 
-            <div class="heroText">
-                Complete tasks, earn rewards,
-                invite friends and discover
-                new opportunities.
-            </div>
+        if (
+            tg &&
+            typeof tg.openTelegramLink === "function"
+        ) {
+            tg.openTelegramLink(url);
+        } else {
+            window.open(url, "_blank");
+        }
 
-        </section>
+    } catch (error) {
 
+        window.open(url, "_blank");
 
-        <!-- FEATURES -->
+    }
 
-        <div class="sectionTitle">
-            Explore Falcon World
-        </div>
+}
 
 
-        <div class="grid">
+/* =====================================================
+   CHECK MEMBERSHIP
+===================================================== */
 
+async function checkMembership() {
 
-            <div class="feature">
+    const button =
+        document.getElementById("checkButton");
 
-                <div class="featureIcon">
-                    💰
-                </div>
+    if (!initData) {
 
-                <div class="featureTitle">
-                    Earn
-                </div>
+        showTelegramError();
 
-                <div class="featureText">
-                    Complete tasks and earn.
-                </div>
+        return;
+    }
 
-            </div>
+    button.disabled = true;
+    button.innerText = "Checking...";
 
+    try {
 
-            <div class="feature">
+        const response = await fetch(
+            "/api/verify",
+            {
+                method: "POST",
 
-                <div class="featureIcon">
-                    🎁
-                </div>
+                headers: {
+                    "Content-Type":
+                        "application/json",
 
-                <div class="featureTitle">
-                    Daily Bonus
-                </div>
-
-                <div class="featureText">
-                    Claim daily rewards.
-                </div>
-
-            </div>
-
-
-            <div class="feature">
-
-                <div class="featureIcon">
-                    👥
-                </div>
-
-                <div class="featureTitle">
-                    Referral
-                </div>
-
-                <div class="featureText">
-                    Invite friends and earn.
-                </div>
-
-            </div>
-
-
-            <div class="feature">
-
-                <div class="featureIcon">
-                    🚀
-                </div>
-
-                <div class="featureTitle">
-                    Opportunities
-                </div>
-
-                <div class="featureText">
-                    Discover new opportunities.
-                </div>
-
-            </div>
-
-
-        </div>
-
-
-        <div class="footer">
-            Falcon World • Earn. Refer. Grow.
-        </div>
-
-
-    </main>
-
-
-    <!-- =========================
-         LOADING SCRIPT
-    ========================== -->
-
-    <script>
-
-        window.addEventListener(
-            "load",
-            function() {
-
-                setTimeout(
-                    function() {
-
-                        const loader =
-                            document.getElementById(
-                                "loadingScreen"
-                            );
-
-                        if (loader) {
-                            loader.classList.add("hide");
-                        }
-
-                    },
-                    1800
-                );
-
+                    "X-Telegram-Init-Data":
+                        initData
+                },
+
+                body: JSON.stringify({})
             }
         );
 
-    </script>
 
+        const data =
+            await response.json();
+
+
+        if (!response.ok) {
+
+            if (
+                data &&
+                data.error ===
+                "telegram_required"
+            ) {
+                showTelegramError();
+                return;
+            }
+
+            alert(
+                data.error ||
+                "Verification failed. Please try again."
+            );
+
+            return;
+        }
+
+
+        currentChannels =
+            data.channels || [];
+
+
+        renderChannels(
+            currentChannels
+        );
+
+
+        updateProgress(
+            data.verified_count,
+            data.total
+        );
+
+
+        if (data.verified) {
+
+            showSuccess();
+
+        }
+
+    } catch (error) {
+
+        console.error(error);
+
+        alert(
+            "Connection error. Please try again."
+        );
+
+    } finally {
+
+        button.disabled = false;
+
+        button.innerText =
+            "🔄 Check Verification";
+
+    }
+
+}
+
+
+/* =====================================================
+   RENDER CHANNELS
+===================================================== */
+
+function renderChannels(channels) {
+
+    const container =
+        document.getElementById(
+            "channelList"
+        );
+
+    container.innerHTML = "";
+
+
+    channels.forEach(
+        (channel, index) => {
+
+            const card =
+                document.createElement("div");
+
+            card.className =
+                "channel-card";
+
+
+            const buttonText =
+                channel.joined
+                    ? "Joined ✓"
+                    : "Join";
+
+
+            const buttonClass =
+                channel.joined
+                    ? "channel-button joined"
+                    : "channel-button";
+
+
+            const buttonDisabled =
+                channel.joined
+                    ? "disabled"
+                    : "";
+
+
+            card.innerHTML = `
+
+                <div class="channel-icon">
+                    ${channel.joined ? "✓" : "📢"}
+                </div>
+
+                <div class="channel-info">
+
+                    <div class="channel-name">
+                        ${escapeHtml(channel.name)}
+                    </div>
+
+                    <div class="channel-username">
+                        ${escapeHtml(channel.username)}
+                    </div>
+
+                </div>
+
+                <button
+                    class="${buttonClass}"
+                    ${buttonDisabled}
+                    onclick="openChannel('${channel.url}')"
+                >
+                    ${buttonText}
+                </button>
+
+            `;
+
+
+            container.appendChild(card);
+
+        }
+    );
+
+}
+
+
+/* =====================================================
+   PROGRESS
+===================================================== */
+
+function updateProgress(
+    count,
+    total
+) {
+
+    const countElement =
+        document.getElementById(
+            "progressCount"
+        );
+
+    const fill =
+        document.getElementById(
+            "progressFill"
+        );
+
+
+    countElement.innerText =
+        `${count}/${total}`;
+
+
+    const percentage =
+        total > 0
+            ? (count / total) * 100
+            : 0;
+
+
+    fill.style.width =
+        `${percentage}%`;
+
+}
+
+
+/* =====================================================
+   SUCCESS
+===================================================== */
+
+function showSuccess() {
+
+    const verificationArea =
+        document.getElementById(
+            "verificationArea"
+        );
+
+    const successScreen =
+        document.getElementById(
+            "successScreen"
+        );
+
+    const dashboard =
+        document.getElementById(
+            "dashboard"
+        );
+
+
+    verificationArea.style.display =
+        "none";
+
+
+    successScreen.classList.add(
+        "show"
+    );
+
+
+    setTimeout(() => {
+
+        successScreen.classList.remove(
+            "show"
+        );
+
+        dashboard.classList.add(
+            "show"
+        );
+
+    }, 1300);
+
+}
+
+
+/* =====================================================
+   TELEGRAM ERROR
+===================================================== */
+
+function showTelegramError() {
+
+    const container =
+        document.getElementById(
+            "channelList"
+        );
+
+    container.innerHTML = `
+
+        <div class="verify-card">
+
+            <div class="verify-title">
+                📱 Open in Telegram
+            </div>
+
+            <div class="verify-description">
+                Please open Falcon World from
+                the Telegram Menu Button to
+                continue verification.
+            </div>
+
+        </div>
+
+    `;
+
+}
+
+
+/* =====================================================
+   ESCAPE HTML
+===================================================== */
+
+function escapeHtml(value) {
+
+    return String(value)
+        .replaceAll("&", "&amp;")
+        .replaceAll("<", "&lt;")
+        .replaceAll(">", "&gt;")
+        .replaceAll('"', "&quot;")
+        .replaceAll("'", "&#039;");
+
+}
+
+
+/* =====================================================
+   INITIAL LOAD
+===================================================== */
+
+async function startApp() {
+
+    initializeTelegram();
+
+
+    setTimeout(() => {
+
+        const loading =
+            document.getElementById(
+                "loadingScreen"
+            );
+
+        const content =
+            document.getElementById(
+                "appContent"
+            );
+
+
+        loading.classList.add(
+            "hide"
+        );
+
+        content.classList.add(
+            "show"
+        );
+
+
+        checkMembership();
+
+    }, 1800);
+
+}
+
+
+/* =====================================================
+   WHEN USER RETURNS FROM TELEGRAM CHANNEL
+===================================================== */
+
+document.addEventListener(
+    "visibilitychange",
+    () => {
+
+        if (
+            document.visibilityState ===
+            "visible"
+        ) {
+
+            if (
+                initData
+            ) {
+
+                setTimeout(
+                    () => {
+                        checkMembership();
+                    },
+                    500
+                );
+
+            }
+
+        }
+
+    }
+);
+
+
+/* =====================================================
+   START
+===================================================== */
+
+startApp();
+
+</script>
 
 </body>
-
 </html>
-    """
-    
+"""
 
-# ==============================
+    return HTMLResponse(content=html)
+
+
+# =========================================================
+# VERIFY API
+# =========================================================
+
+@app.post("/api/verify")
+async def verify_user(request: Request):
+
+    init_data = request.headers.get(
+        "X-Telegram-Init-Data",
+        ""
+    )
+
+    user = validate_init_data(init_data)
+
+    if not user:
+
+        return JSONResponse(
+            {
+                "error":
+                    "telegram_required"
+            },
+            status_code=401
+        )
+
+
+    user_id = int(user["id"])
+
+
+    verification =
+        await check_all_channels(user_id)
+
+
+    return JSONResponse(
+        verification
+    )
+
+
+# =========================================================
 # WEBHOOK
-# ==============================
+# =========================================================
 
 @app.post("/webhook")
 async def webhook(request: Request):
 
-    update = await request.json()
+    try:
 
-    message = update.get("message")
+        update = await request.json()
 
-    if not message:
-        return {"ok": True}
+    except Exception:
 
-    chat = message.get("chat", {})
-
-    chat_id = chat.get("id")
-
-    text = message.get("text", "").strip()
+        return {
+            "ok": True
+        }
 
 
-    # ==========================
+    message = update.get(
+        "message",
+        {}
+    )
+
+    chat = message.get(
+        "chat",
+        {}
+    )
+
+    chat_id = chat.get(
+        "id"
+    )
+
+    text = message.get(
+        "text",
+        ""
+    )
+
+
+    if not chat_id:
+        return {
+            "ok": True
+        }
+
+
+    # =====================================================
     # START COMMAND
-    # ==========================
+    # =====================================================
 
     if text.startswith("/start"):
 
@@ -1123,4 +1808,49 @@ async def webhook(request: Request):
         )
 
 
-    return {"ok": True}
+    return {
+        "ok": True
+    }
+
+
+# =========================================================
+# STARTUP
+# =========================================================
+
+@app.on_event("startup")
+async def startup():
+
+    if not BOT_TOKEN:
+
+        print(
+            "ERROR: BOT_TOKEN is missing."
+        )
+
+        return
+
+
+    webhook_result = await telegram_request(
+        "setWebhook",
+        {
+            "url": WEBHOOK_URL,
+
+            "allowed_updates": [
+                "message"
+            ]
+        }
+    )
+
+    print(
+        "Webhook setup:",
+        webhook_result
+    )
+
+
+    menu_result =
+        await set_menu_button()
+
+
+    print(
+        "Menu button setup:",
+        menu_result
+    )
