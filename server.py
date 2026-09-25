@@ -388,7 +388,7 @@ def reward_referrer_after_verification(user_id: int):
         )
         conn.execute(
             "UPDATE users SET referral_reward_paid=1,updated_at=? WHERE user_id=?",
-            (now, now, user_id),
+            (now, user_id),
         )
         conn.commit()
         return reward
@@ -886,26 +886,15 @@ async def handle_message(message):
         await send_message(
             chat_id,
             (
-                "🦅 <b>WELCOME TO FALCON WORLD</b>\n\n"
-                "💰 Earn & Complete Tasks\n"
-                "🎁 Daily Rewards\n"
-                "👥 Referral Rewards\n"
-                "🚀 New Opportunities\n\n"
-                "💱 USDT Exchange: Buy & Sell\n"
-                "📢 Ads & Promotions: Contact us\n\n"
-                "🚀 Open Falcon World from the Menu below."
+                "🦅 <b>FALCON WORLD</b>\n\n"
+                "Earn rewards, complete tasks and grow your balance.\n\n"
+                "Use Telegram's <b>Open Falcon World</b> button to continue."
             ),
-            {"inline_keyboard": [[{"text": "🚀 Open Falcon World", "web_app": {"url": MINI_APP_URL}}]]},
         )
         return
 
-    # User features live inside the Mini App. Keep normal bot chat focused on launching it.
+    # The Mini App is the user interface. Do not create a second normal-chat menu.
     if not is_admin(user_id) and not text.startswith("/"):
-        await send_message(
-            chat_id,
-            "🦅 <b>Falcon World</b>\n\nOpen the Mini App to access your balance, referrals, bonuses, wallet, tasks and withdrawals.",
-            main_keyboard(),
-        )
         return
 
     if text == "💰 Balance":
@@ -1393,7 +1382,7 @@ async def mini_app():
 body:before{content:"";position:fixed;inset:0;pointer-events:none;background:radial-gradient(circle at 15% 0%,rgba(77,163,255,.14),transparent 34%),radial-gradient(circle at 90% 15%,rgba(123,97,255,.12),transparent 32%),linear-gradient(180deg,#08111f 0%,#050a13 58%);z-index:-2}
 body:after{content:"";position:fixed;inset:0;pointer-events:none;opacity:.28;background-image:radial-gradient(rgba(255,255,255,.18) .6px,transparent .6px);background-size:18px 18px;mask-image:linear-gradient(to bottom,black,transparent 75%);z-index:-1}
 button,input,textarea{font:inherit}button{border:0;color:inherit;cursor:pointer}.app{max-width:520px;margin:auto;padding:calc(16px + env(safe-area-inset-top)) 16px calc(92px + env(safe-area-inset-bottom))}.hidden{display:none!important}.fade{animation:fade .28s ease}@keyframes fade{from{opacity:0;transform:translateY(7px)}to{opacity:1;transform:none}}
-.splash{position:fixed;inset:0;z-index:50;display:flex;align-items:center;justify-content:center;background:#050a13}.splashInner{text-align:center}.falcon{width:112px;height:112px;margin:auto;border-radius:34px;display:grid;place-items:center;font-size:62px;background:linear-gradient(145deg,#10233c,#0b1220);border:1px solid rgba(255,255,255,.1);box-shadow:0 0 80px rgba(77,163,255,.18),inset 0 1px rgba(255,255,255,.08)}.splash h1{margin:20px 0 5px;font-size:30px;letter-spacing:-.8px}.splash p{margin:0;color:var(--muted);font-size:13px}.loader{width:190px;height:4px;background:#182438;border-radius:99px;overflow:hidden;margin:24px auto 0}.loader i{display:block;width:45%;height:100%;background:linear-gradient(90deg,var(--accent),var(--accent2));animation:load 1.1s infinite}@keyframes load{0%{transform:translateX(-120%)}100%{transform:translateX(330%)}}
+.splash{position:fixed;inset:0;z-index:50;display:flex;align-items:center;justify-content:center;background:#050a13}.splashInner{text-align:center}.falcon svg{width:72px;height:72px;filter:drop-shadow(0 0 18px rgba(77,163,255,.35))}.falcon{width:112px;height:112px;margin:auto;border-radius:34px;display:grid;place-items:center;font-size:62px;color:#8fc7ff;background:linear-gradient(145deg,#10233c,#0b1220);border:1px solid rgba(255,255,255,.1);box-shadow:0 0 80px rgba(77,163,255,.18),inset 0 1px rgba(255,255,255,.08)}.splash h1{margin:20px 0 5px;font-size:30px;letter-spacing:-.8px}.splash p{margin:0;color:var(--muted);font-size:13px}.loader{width:190px;height:4px;background:#182438;border-radius:99px;overflow:hidden;margin:24px auto 0}.loader i{display:block;width:45%;height:100%;background:linear-gradient(90deg,var(--accent),var(--accent2));animation:load 1.1s infinite}@keyframes load{0%{transform:translateX(-120%)}100%{transform:translateX(330%)}}
 .top{display:flex;align-items:center;justify-content:space-between;margin-bottom:18px}.brand{display:flex;align-items:center;gap:10px}.brandIcon{width:42px;height:42px;border-radius:14px;display:grid;place-items:center;background:linear-gradient(145deg,#132c49,#0d1728);border:1px solid var(--line);font-size:23px}.brandText b{display:block;font-size:16px}.brandText span{font-size:11px;color:var(--muted)}.pill{padding:8px 11px;border:1px solid var(--line);border-radius:999px;background:rgba(255,255,255,.035);font-size:11px;color:#b9c8da}
 .page{display:none}.page.active{display:block}.hero{position:relative;overflow:hidden;padding:22px;border-radius:28px;background:linear-gradient(145deg,rgba(17,36,61,.98),rgba(8,17,30,.98));border:1px solid rgba(255,255,255,.1);box-shadow:0 20px 55px rgba(0,0,0,.28)}.hero:after{content:"";position:absolute;width:180px;height:180px;right:-75px;top:-75px;border-radius:50%;background:rgba(77,163,255,.16);filter:blur(12px)}.eyebrow{font-size:11px;color:#9bb1ca;text-transform:uppercase;letter-spacing:1.4px}.bigBalance{font-size:40px;line-height:1;margin:9px 0 6px;font-weight:850;letter-spacing:-1.4px}.heroSub{font-size:12px;color:var(--muted)}
 .sectionTitle{display:flex;justify-content:space-between;align-items:end;margin:22px 2px 11px}.sectionTitle h2{font-size:17px;margin:0}.sectionTitle span{font-size:11px;color:var(--muted)}
@@ -1409,7 +1398,7 @@ button,input,textarea{font:inherit}button{border:0;color:inherit;cursor:pointer}
 </style>
 </head>
 <body>
-<div class="splash" id="splash"><div class="splashInner"><div class="falcon">🦅</div><h1>Falcon World</h1><p>Securely loading your account</p><div class="loader"><i></i></div></div></div>
+<div class="splash" id="splash"><div class="splashInner"><div class="falcon"><svg viewBox="0 0 120 120" aria-hidden="true"><path d="M15 70c18-7 28-19 38-39 9 8 18 13 31 15 9 1 17 6 21 14-14-5-26-2-38 7-12 9-27 13-52 3z" fill="none" stroke="currentColor" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"/><path d="M43 76c10 2 20 1 29-5M51 53c6 8 12 12 21 14M72 42l10 13" fill="none" stroke="currentColor" stroke-width="4" stroke-linecap="round"/></svg></div><h1>Falcon World</h1><p>Securely loading your account</p><div class="loader"><i></i></div></div></div>
 <div class="app" id="app">
   <div class="top"><div class="brand"><div class="brandIcon">🦅</div><div class="brandText"><b>Falcon World</b><span>Earn • Grow • Withdraw</span></div></div><div class="pill" id="userPill">Online</div></div>
 
@@ -1458,10 +1447,10 @@ async function api(url,options={}){const r=await fetch(url,{...options,headers:{
 function setPage(id){document.querySelectorAll('.page').forEach(x=>x.classList.remove('active'));document.getElementById(id)?.classList.add('active');document.getElementById(id)?.classList.add('fade');window.scrollTo({top:0,behavior:'smooth'});document.getElementById('nav').style.display=id==='verifyPage'?'none':'grid';['navHome'].forEach(x=>document.getElementById(x)?.classList.toggle('active',id==='home'))}
 function go(id){setPage(id);if(id==='home'||id==='balancePage'||id==='withdraw')loadMe();if(id==='balancePage')loadMe();if(id==='referral')loadReferral();if(id==='daily')loadDaily();if(id==='wallet')renderWallet();if(id==='tasks')loadTasks()}
 function openLink(url){if(tg?.openTelegramLink)tg.openTelegramLink(url);else window.open(url,'_blank')}
-async function start(){try{const me=await api('/api/me');userData=me;if(me.verified){setPage('home');loadMe()}else{setPage('verifyPage');await loadCaptcha()}}catch(e){setPage('verifyPage');await loadCaptcha()}}
+async function start(){try{tg?.ready?.();tg?.expand?.();const me=await api('/api/me');userData=me;if(me.verified){setPage('home');loadMe()}else{setPage('verifyPage');await loadCaptcha()}}catch(e){setPage('verifyPage');const msg=document.getElementById('captchaMsg');if(e.message==='telegram_required'){msg.innerHTML='<div class="notice warn">Open Falcon World from Telegram to continue.</div>'}else{await loadCaptcha()}}}
 async function loadCaptcha(){try{const d=await api('/api/captcha');captchaToken=d.token;document.getElementById('captchaQuestion').textContent=d.question;document.getElementById('captchaAnswer').value='';document.getElementById('captchaAnswer').focus()}catch(e){document.getElementById('captchaMsg').innerHTML='<div class="notice err">'+esc(e.message)+'</div>'}}
 async function verifyCaptcha(){const msg=document.getElementById('captchaMsg');try{const d=await api('/api/captcha/verify',{method:'POST',body:JSON.stringify({token:captchaToken,answer:document.getElementById('captchaAnswer').value})});if(d.ok){document.getElementById('captchaCard').classList.add('hidden');document.getElementById('channelsCard').classList.remove('hidden');await renderChannels()}else msg.innerHTML='<div class="notice err">Incorrect answer. Please try again.</div>'}catch(e){msg.innerHTML='<div class="notice err">'+esc(e.message)+'</div>';await loadCaptcha()}}
-async function renderChannels(){const box=document.getElementById('channels');box.innerHTML='Loading…';try{const d=await api('/api/verify');box.innerHTML=d.channels.filter(x=>!x.joined).map(ch=>`<div class="channel"><div class="channelIcon">📣</div><div class="channelMain"><b>${esc(ch.name)}</b><span>${esc(ch.username)}</span></div><button class="join" onclick="openLink('${ch.url}')">Join</button></div>`).join('')||'<div class="notice ok">All required channels appear joined. Tap Verify Membership.</div>'}catch(e){box.innerHTML='<div class="notice err">'+esc(e.message)+'</div>'}}
+async function renderChannels(){const box=document.getElementById('channels');box.innerHTML='Loading…';try{const d=await api('/api/verify');const missing=d.channels.filter(x=>!x.joined);const joined=d.verified_count||0;const total=d.total||d.channels.length;let html='<div class="notice warn">'+joined+'/'+total+' channels joined</div>';html+=missing.map((ch,i)=>`<div class="channel"><div class="channelIcon">📣</div><div class="channelMain"><b>${esc(ch.name)}</b><span>${esc(ch.username)}</span></div><button class="join" data-url="${esc(ch.url)}" onclick="openLink(this.dataset.url)">Join</button></div>`).join('');if(!missing.length)html+='<div class="notice ok">All required channels appear joined. Tap Verify Membership.</div>';box.innerHTML=html}catch(e){box.innerHTML='<div class="notice err">'+esc(e.message)+'</div>'}}
 async function verifyMembership(){const msg=document.getElementById('verifyMsg');msg.innerHTML='<div class="notice warn">Checking membership…</div>';try{const d=await api('/api/verify',{method:'POST',body:'{}'});if(d.verified){msg.innerHTML='<div class="notice ok">Verification successful. Welcome to Falcon World!</div>';setTimeout(()=>{setPage('home');loadMe()},350)}else{msg.innerHTML='<div class="notice warn">'+d.verified_count+'/'+d.total+' channels joined. Join the remaining channels and try again.</div>';renderChannels()}}catch(e){msg.innerHTML='<div class="notice err">'+esc(e.message)+'</div>'}}
 function money(n){return Number(n||0).toFixed(2)+' ETB'}
 async function loadMe(){try{const d=await api('/api/me');userData=d;document.getElementById('balance').textContent=money(d.balance);document.getElementById('balance2').textContent=money(d.balance);document.getElementById('withdrawBalance').textContent=money(d.balance);document.getElementById('homeId').textContent=d.user_id;document.getElementById('homeWallet').textContent=d.wallet_type||'Not set';document.getElementById('withdrawWallet').textContent=d.wallet_type?d.wallet_type:'Not set';document.getElementById('refEarn').textContent=money(d.referral_earnings);document.getElementById('dailyEarn').textContent=money(d.daily_bonus_earnings);document.getElementById('taskEarn').textContent=money(d.task_earnings);document.getElementById('totalEarn').textContent=money(d.total_earned);document.getElementById('totalWithdrawn').textContent=money(d.total_withdrawn);document.getElementById('pendingWithdraw').textContent=money(d.pending_withdrawal);document.getElementById('minWithdraw').textContent=money(d.min_withdraw);if(d.wallet_type){walletType=d.wallet_type;renderWallet()}}catch(e){}}
@@ -1528,7 +1517,7 @@ async def api_captcha_verify(request: Request):
     return {"ok": True}
 
 
-@app.post("/api/verify")
+@app.api_route("/api/verify", methods=["GET", "POST"])
 async def verify_user(request: Request):
     user, error = await require_user(request)
     if error:
@@ -1837,7 +1826,7 @@ async def startup():
     menu_data = {
         "menu_button": {
             "type": "web_app",
-            "text": "🚀 Open Falcon",
+            "text": "🦅 Open Falcon World",
             "web_app": {"url": MINI_APP_URL},
         }
     }
