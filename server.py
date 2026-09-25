@@ -14,49 +14,23 @@ BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip()
 ADMIN_ID = os.getenv("ADMIN_ID", "").strip()
 
 BOT_USERNAME = "FalconWorld_Bot"
+
 WEBHOOK_URL = "https://falcon-world.onrender.com/webhook"
+
+# Mini App URL
+MINI_APP_URL = "https://falcon-world.onrender.com/app"
 
 TELEGRAM_API = f"https://api.telegram.org/bot{BOT_TOKEN}"
 
-CHANNELS = [
-    {
-        "username": "@Sheger_tech1",
-        "name": "Sheger Tech",
-        "url": "https://t.me/Sheger_tech1",
-    },
-    {
-        "username": "@EthioVortex1",
-        "name": "Ethio Vortex",
-        "url": "https://t.me/EthioVortex1",
-    },
-    {
-        "username": "@ethiocashflow",
-        "name": "Ethio Cash Flow",
-        "url": "https://t.me/ethiocashflow",
-    },
-    {
-        "username": "@AmanIncomeLab",
-        "name": "Aman Income Lab",
-        "url": "https://t.me/AmanIncomeLab",
-    },
-    {
-        "username": "@OnlineIncomeHub07",
-        "name": "Online Income Hub",
-        "url": "https://t.me/OnlineIncomeHub07",
-    },
-    {
-        "username": "@Paymentprooff2",
-        "name": "Payment Proof",
-        "url": "https://t.me/Paymentprooff2",
-    },
-]
-
 
 # =========================
-# TELEGRAM HELPERS
+# TELEGRAM API
 # =========================
 
-async def telegram_request(method: str, payload: dict | None = None):
+async def telegram_request(
+    method: str,
+    payload: dict | None = None,
+):
     if not BOT_TOKEN:
         raise RuntimeError("BOT_TOKEN is missing.")
 
@@ -76,7 +50,15 @@ async def telegram_request(method: str, payload: dict | None = None):
             }
 
 
-async def send_message(chat_id: int, text: str, reply_markup: dict | None = None):
+# =========================
+# SEND MESSAGE
+# =========================
+
+async def send_message(
+    chat_id: int,
+    text: str,
+    reply_markup: dict | None = None,
+):
     payload = {
         "chat_id": chat_id,
         "text": text,
@@ -85,115 +67,9 @@ async def send_message(chat_id: int, text: str, reply_markup: dict | None = None
     if reply_markup:
         payload["reply_markup"] = reply_markup
 
-    return await telegram_request("sendMessage", payload)
-
-
-async def answer_callback(callback_id: str, text: str):
     return await telegram_request(
-        "answerCallbackQuery",
-        {
-            "callback_query_id": callback_id,
-            "text": text,
-        },
-    )
-
-
-# =========================
-# CHANNEL VERIFICATION
-# =========================
-
-async def is_user_member(channel_username: str, user_id: int) -> bool:
-    result = await telegram_request(
-        "getChatMember",
-        {
-            "chat_id": channel_username,
-            "user_id": user_id,
-        },
-    )
-
-    if not result.get("ok"):
-        # If Telegram cannot check the channel, treat it as not verified.
-        return False
-
-    member = result.get("result", {})
-    status = member.get("status")
-
-    return status in {
-        "creator",
-        "administrator",
-        "member",
-        "restricted",
-    }
-
-
-async def get_unjoined_channels(user_id: int):
-    unjoined = []
-
-    for channel in CHANNELS:
-        joined = await is_user_member(
-            channel["username"],
-            user_id,
-        )
-
-        if not joined:
-            unjoined.append(channel)
-
-    return unjoined
-
-
-# =========================
-# JOIN MESSAGE
-# =========================
-
-async def send_channel_verification(chat_id: int, user_id: int):
-    unjoined = await get_unjoined_channels(user_id)
-
-    # Everything is joined.
-    if not unjoined:
-        await send_message(
-            chat_id,
-            "🎉 ሁሉንም Required Channels በትክክል ተቀላቅለዋል!\n\n"
-            "✅ Verification complete.\n\n"
-            "🚀 Falcon World በቅርቡ ይከፈታል።",
-        )
-        return
-
-    keyboard = []
-
-    for channel in unjoined:
-        keyboard.append(
-            [
-                {
-                    "text": f"📢 Join {channel['name']}",
-                    "url": channel["url"],
-                }
-            ]
-        )
-
-    keyboard.append(
-        [
-            {
-                "text": "✅ Verify Membership",
-                "callback_data": "verify_membership",
-            }
-        ]
-    )
-
-    text = (
-        "🦅 FALCON WORLD\n\n"
-        "👋 እንኳን ደህና መጡ!\n\n"
-        "Falcon World ለመጠቀም ከታች ያሉትን "
-        "Required Channels ይቀላቀሉ።\n\n"
-        "ከተቀላቀሉ በኋላ **Verify Membership** ይጫኑ።\n\n"
-        f"📌 Remaining: {len(unjoined)}"
-    )
-
-    await send_message(
-        chat_id,
-        text,
-        {
-            "inline_keyboard": keyboard,
-        },
+        "sendMessage",
+        payload,
     )
 
 
@@ -203,6 +79,7 @@ async def send_channel_verification(chat_id: int, user_id: int):
 
 @app.on_event("startup")
 async def startup():
+
     if not BOT_TOKEN:
         print("ERROR: BOT_TOKEN is missing.")
         return
@@ -222,19 +99,18 @@ async def startup():
 
 
 # =========================
-# HEALTH CHECK
+# HEALTH
 # =========================
 
 @app.get("/health")
 async def health():
-    bot_status = "configured" if BOT_TOKEN else "missing"
 
     return {
         "status": "ok",
         "app": "Falcon World",
         "bot": BOT_USERNAME,
+        "mini_app": MINI_APP_URL,
         "database": "not_started",
-        "bot_token": bot_status,
     }
 
 
@@ -244,11 +120,147 @@ async def health():
 
 @app.get("/")
 async def root():
+
     return {
         "status": "ok",
         "app": "Falcon World",
-        "message": "Falcon World Bot Server is running.",
+        "message": "Falcon World is running.",
     }
+
+
+# =========================
+# MINI APP TEST PAGE
+# =========================
+
+@app.get("/app")
+async def mini_app():
+
+    html = """
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+
+    <meta
+        name="viewport"
+        content="width=device-width,
+        initial-scale=1.0,
+        maximum-scale=1.0,
+        user-scalable=no"
+    >
+
+    <title>Falcon World</title>
+
+    <style>
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+
+        body {
+            min-height: 100vh;
+            font-family: Arial, sans-serif;
+            background: #07111f;
+            color: #ffffff;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 24px;
+        }
+
+        .container {
+            width: 100%;
+            max-width: 420px;
+            text-align: center;
+        }
+
+        .logo {
+            font-size: 64px;
+            margin-bottom: 18px;
+        }
+
+        h1 {
+            font-size: 30px;
+            letter-spacing: 2px;
+            margin-bottom: 12px;
+        }
+
+        .subtitle {
+            color: #9eacbd;
+            font-size: 15px;
+            line-height: 1.6;
+            margin-bottom: 30px;
+        }
+
+        .status {
+            padding: 16px;
+            border-radius: 16px;
+            background: #101d2e;
+            border: 1px solid #1e3148;
+            margin-bottom: 18px;
+        }
+
+        .status-title {
+            font-size: 13px;
+            color: #8fa2b8;
+            margin-bottom: 7px;
+        }
+
+        .status-value {
+            font-size: 18px;
+            font-weight: bold;
+        }
+
+        .open-button {
+            width: 100%;
+            border: none;
+            border-radius: 16px;
+            padding: 16px;
+            font-size: 16px;
+            font-weight: bold;
+            background: #ffffff;
+            color: #07111f;
+        }
+    </style>
+</head>
+
+<body>
+
+<div class="container">
+
+    <div class="logo">🦅</div>
+
+    <h1>FALCON WORLD</h1>
+
+    <div class="subtitle">
+        Earn. Refer. Withdraw.<br>
+        Your journey starts here.
+    </div>
+
+    <div class="status">
+        <div class="status-title">
+            PLATFORM STATUS
+        </div>
+
+        <div class="status-value">
+            Connected
+        </div>
+    </div>
+
+    <button class="open-button">
+        Falcon World
+    </button>
+
+</div>
+
+</body>
+</html>
+"""
+
+    from fastapi.responses import HTMLResponse
+
+    return HTMLResponse(content=html)
 
 
 # =========================
@@ -257,82 +269,65 @@ async def root():
 
 @app.post("/webhook")
 async def webhook(request: Request):
+
     try:
         update = await request.json()
+
     except Exception:
         return JSONResponse(
-            {"ok": False, "error": "Invalid JSON"},
+            {
+                "ok": False,
+                "error": "Invalid JSON",
+            },
             status_code=400,
         )
 
-    # -------------------------
-    # Normal message
-    # -------------------------
+    # =========================
+    # MESSAGE
+    # =========================
 
     if "message" in update:
+
         message = update["message"]
 
         chat = message.get("chat", {})
         user = message.get("from", {})
 
         chat_id = chat.get("id")
-        user_id = user.get("id")
         text = message.get("text", "")
 
-        if not chat_id or not user_id:
+        if not chat_id:
             return {"ok": True}
 
+        # =========================
+        # START
+        # =========================
+
         if text.startswith("/start"):
-            await send_channel_verification(
+
+            keyboard = {
+                "inline_keyboard": [
+                    [
+                        {
+                            "text": "🚀 Open Falcon World",
+                            "web_app": {
+                                "url": MINI_APP_URL
+                            },
+                        }
+                    ]
+                ]
+            }
+
+            await send_message(
                 chat_id,
-                user_id,
+                (
+                    "🦅 FALCON WORLD\n\n"
+                    "Welcome to Falcon World.\n\n"
+                    "Earn. Refer. Withdraw.\n\n"
+                    "Your journey starts here."
+                ),
+                keyboard,
             )
-
-        return {"ok": True}
-
-    # -------------------------
-    # Callback query
-    # -------------------------
-
-    if "callback_query" in update:
-        callback = update["callback_query"]
-
-        callback_id = callback.get("id")
-        callback_data = callback.get("data")
-
-        user = callback.get("from", {})
-        user_id = user.get("id")
-
-        message = callback.get("message", {})
-        chat = message.get("chat", {})
-        chat_id = chat.get("id")
-
-        if callback_data == "verify_membership":
-            unjoined = await get_unjoined_channels(user_id)
-
-            if not unjoined:
-                await answer_callback(
-                    callback_id,
-                    "✅ Verification complete!",
-                )
-
-                await send_message(
-                    chat_id,
-                    "🎉 **Verification Complete!**\n\n"
-                    "ሁሉንም Required Channels ተቀላቅለዋል።\n\n"
-                    "🦅 Falcon World ለመጠቀም ዝግጁ ነው።",
-                )
-
-            else:
-                await answer_callback(
-                    callback_id,
-                    f"❌ {len(unjoined)} channel(s) remaining.",
-                )
-
-                await send_channel_verification(
-                    chat_id,
-                    user_id,
-                )
 
         return {"ok": True}
 
