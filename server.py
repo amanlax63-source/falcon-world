@@ -88,6 +88,7 @@ async def telegram_request(method: str, data: dict | None = None):
 
 
 async def set_menu_button():
+    """የጽሁፍ መጻፊያው ጎን ላይ አፑን የመክፈቻ አዝራር ያዘጋጃል"""
     return await telegram_request(
         "setChatMenuButton",
         {
@@ -100,16 +101,13 @@ async def set_menu_button():
     )
 
 
-async def send_message(chat_id: int, text: str, reply_markup: dict | None = None):
+async def send_message(chat_id: int, text: str):
     data = {
         "chat_id": chat_id,
         "text": text,
         "parse_mode": "Markdown",
         "disable_web_page_preview": True,
     }
-    if reply_markup:
-        data["reply_markup"] = reply_markup
-
     return await telegram_request("sendMessage", data)
 
 
@@ -238,7 +236,6 @@ html, body {
     overflow-x: hidden;
 }
 
-/* Background Effects */
 .app-bg {
     position: fixed;
     inset: 0;
@@ -554,7 +551,7 @@ html, body {
 <div class="app-bg"></div>
 <div class="glow"></div>
 
-<!-- LOADING SCREEN WITH 0% TO 100% ANIMATION -->
+<!-- LOADING SCREEN -->
 <div id="loadingScreen">
     <div class="falcon-loader">🦅</div>
     <div class="loading-title">FALCON WORLD</div>
@@ -746,7 +743,6 @@ function escapeHtml(str) {
     return String(str).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 }
 
-// Auto-check when returning to web app
 document.addEventListener("visibilitychange", () => {
     if (document.visibilityState === "visible") {
         checkMembership(false);
@@ -799,6 +795,7 @@ async def webhook(request: Request):
         return {"ok": True}
 
     if text.startswith("/start"):
+        # የተስተካከለው የጽሁፍ መልስ (ከስሩ ምንም Inline Button የለውም)
         welcome_message = """🦅 *WELCOME TO FALCON WORLD*
 
 💰 *Earn & Complete Tasks*
@@ -806,23 +803,12 @@ async def webhook(request: Request):
 👥 *Referral Rewards*
 🚀 *New Opportunities*
 
-📢 *Ads & Promotions:* Contact us
-💱 *USDT Exchange:* Buy & Sell
+📢 *Ads & Promotions:* @Aman_wood
+💱 *USDT Exchange:* Buy & Sell (@Aman_wood)
 
 🚀 Open Falcon World from the Menu below."""
 
-        reply_markup = {
-            "inline_keyboard": [
-                [
-                    {
-                        "text": "🚀 Open Falcon World",
-                        "web_app": {"url": MINI_APP_URL}
-                    }
-                ]
-            ]
-        }
-
-        await send_message(chat_id, welcome_message, reply_markup=reply_markup)
+        await send_message(chat_id, welcome_message)
 
     return {"ok": True}
 
