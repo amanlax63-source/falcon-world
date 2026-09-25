@@ -802,8 +802,8 @@ async def webhook(request: Request):
 👥 *Referral Rewards*
 🚀 *New Opportunities*
 
-📢 *Ads & Promotions:* @AmanM_12
-💱 *USDT Exchange:* Buy & Sell (@AmanM_12)
+📢 *Ads & Promotions:* *DM @AmanM_12*
+💱 *USDT Exchange:* Buy & Sell
 
 🚀 Open Falcon World from the Menu below."""
 
