@@ -795,7 +795,6 @@ async def webhook(request: Request):
         return {"ok": True}
 
     if text.startswith("/start"):
-        # የተስተካከለው የጽሁፍ መልስ (ከስሩ ምንም Inline Button የለውም)
         welcome_message = """🦅 *WELCOME TO FALCON WORLD*
 
 💰 *Earn & Complete Tasks*
@@ -803,8 +802,8 @@ async def webhook(request: Request):
 👥 *Referral Rewards*
 🚀 *New Opportunities*
 
-📢 *Ads & Promotions:* @Aman_wood
-💱 *USDT Exchange:* Buy & Sell (@Aman_wood)
+📢 *Ads & Promotions:* @AmanM_12
+💱 *USDT Exchange:* Buy & Sell (@AmanM_12)
 
 🚀 Open Falcon World from the Menu below."""
 
