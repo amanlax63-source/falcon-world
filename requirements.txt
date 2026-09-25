@@ -1,1 +1,3 @@
-python-telegram-bot>=21,<23
+fastapi
+uvicorn[standard]
+httpx
