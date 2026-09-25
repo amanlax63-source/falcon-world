@@ -1,58 +1,36 @@
 import os
-import sqlite3
-from datetime import datetime, timedelta
-from typing import Optional
+import json
+import hmac
+import hashlib
+import time
+import asyncio
+from urllib.parse import parse_qsl
 
 import httpx
-from fastapi import FastAPI, HTTPException
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, JSONResponse
-from pydantic import BaseModel
+from fastapi import FastAPI, Request
+from fastapi.responses import HTMLResponse, JSONResponse
 
 
-# ============================================================
-# FALCON WORLD - SERVER
-# ============================================================
-
-app = FastAPI(title="Falcon World API", version="1.0.0")
-
-
-# ============================================================
-# CORS
-# ============================================================
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-
-# ============================================================
+# =========================================================
 # CONFIG
-# ============================================================
+# =========================================================
 
-BOT_TOKEN = os.getenv("BOT_TOKEN", "")
-BOT_USERNAME = os.getenv("BOT_USERNAME", "FalconWorld_Bot")
+BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip()
+ADMIN_ID = os.getenv("ADMIN_ID", "").strip()
 
-ADMIN_USERNAME = os.getenv("ADMIN_USERNAME", "Aman_M12")
+BOT_USERNAME = "FalconWorld_Bot"
 
-DAILY_BONUS = 0.50
-REFERRAL_REWARD = 2.00
-MIN_WITHDRAW = 30.00
+WEBHOOK_URL = "https://falcon-world.onrender.com/webhook"
+MINI_APP_URL = "https://falcon-world.onrender.com/app"
 
-DB_FILE = "falcon_world.db"
+TELEGRAM_API = f"https://api.telegram.org/bot{BOT_TOKEN}"
 
 
-# Required Telegram channels
+# =========================================================
+# REQUIRED CHANNELS
+# =========================================================
+
 REQUIRED_CHANNELS = [
-    {
-        "username": "@ethiocashflow",
-        "name": "Ethio Cash Flow",
-        "url": "https://t.me/ethiocashflow",
-    },
     {
         "username": "@Sheger_tech1",
         "name": "Sheger Tech",
@@ -62,6 +40,11 @@ REQUIRED_CHANNELS = [
         "username": "@EthioVortex1",
         "name": "Ethio Vortex",
         "url": "https://t.me/EthioVortex1",
+    },
+    {
+        "username": "@ethiocashflow",
+        "name": "Ethio Cash Flow",
+        "url": "https://t.me/ethiocashflow",
     },
     {
         "username": "@AmanIncomeLab",
@@ -81,937 +64,663 @@ REQUIRED_CHANNELS = [
 ]
 
 
-# ============================================================
-# DATABASE
-# ============================================================
+# =========================================================
+# FASTAPI APP
+# =========================================================
 
-def get_db():
-    conn = sqlite3.connect(DB_FILE)
-    conn.row_factory = sqlite3.Row
-    return conn
+app = FastAPI()
 
 
-def init_db():
-    conn = get_db()
+# =========================================================
+# TELEGRAM API HELPER
+# =========================================================
 
-    conn.execute(
-        """
-        CREATE TABLE IF NOT EXISTS users (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            telegram_id TEXT UNIQUE NOT NULL,
-            username TEXT DEFAULT '',
-            first_name TEXT DEFAULT '',
-            balance REAL DEFAULT 0,
-            referral_count INTEGER DEFAULT 0,
-            referred_by TEXT DEFAULT '',
-            daily_claim TEXT DEFAULT '',
-            cbe TEXT DEFAULT '',
-            telebirr TEXT DEFAULT '',
-            created_at TEXT DEFAULT CURRENT_TIMESTAMP
-        )
-        """
-    )
-
-    conn.execute(
-        """
-        CREATE TABLE IF NOT EXISTS withdrawals (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            telegram_id TEXT NOT NULL,
-            amount REAL NOT NULL,
-            method TEXT NOT NULL,
-            account TEXT NOT NULL,
-            status TEXT DEFAULT 'Pending',
-            created_at TEXT DEFAULT CURRENT_TIMESTAMP
-        )
-        """
-    )
-
-    conn.execute(
-        """
-        CREATE TABLE IF NOT EXISTS tasks (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            title TEXT NOT NULL,
-            reward REAL DEFAULT 0,
-            url TEXT DEFAULT '',
-            active INTEGER DEFAULT 1
-        )
-        """
-    )
-
-    conn.execute(
-        """
-        CREATE TABLE IF NOT EXISTS completed_tasks (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            telegram_id TEXT NOT NULL,
-            task_id INTEGER NOT NULL,
-            created_at TEXT DEFAULT CURRENT_TIMESTAMP,
-            UNIQUE(telegram_id, task_id)
-        )
-        """
-    )
-
-    # Add default task if empty
-    task_count = conn.execute(
-        "SELECT COUNT(*) AS c FROM tasks"
-    ).fetchone()["c"]
-
-    if task_count == 0:
-        conn.execute(
-            """
-            INSERT INTO tasks (title, reward, url, active)
-            VALUES (?, ?, ?, ?)
-            """,
-            (
-                "Coming Soon",
-                0,
-                "",
-                0,
-            ),
-        )
-
-    conn.commit()
-    conn.close()
-
-
-init_db()
-
-
-# ============================================================
-# MODELS
-# ============================================================
-
-class RegisterRequest(BaseModel):
-    telegram_id: str
-    username: Optional[str] = ""
-    first_name: Optional[str] = ""
-    referral: Optional[str] = ""
-
-
-class WalletRequest(BaseModel):
-    telegram_id: str
-    cbe: Optional[str] = ""
-    telebirr: Optional[str] = ""
-
-
-class WithdrawRequest(BaseModel):
-    telegram_id: str
-    amount: float
-    method: str
-    account: str
-
-
-class DailyBonusRequest(BaseModel):
-    telegram_id: str
-
-
-class ReferralRequest(BaseModel):
-    telegram_id: str
-
-
-class TaskRequest(BaseModel):
-    telegram_id: str
-    task_id: int
-
-
-# ============================================================
-# HELPERS
-# ============================================================
-
-def get_user(telegram_id: str):
-    conn = get_db()
-
-    user = conn.execute(
-        "SELECT * FROM users WHERE telegram_id = ?",
-        (str(telegram_id),),
-    ).fetchone()
-
-    conn.close()
-    return user
-
-
-def user_dict(user):
-    if not user:
-        return None
-
-    return {
-        "telegram_id": user["telegram_id"],
-        "username": user["username"],
-        "first_name": user["first_name"],
-        "balance": round(float(user["balance"]), 2),
-        "referral_count": int(user["referral_count"]),
-        "cbe": user["cbe"],
-        "telebirr": user["telebirr"],
-        "created_at": user["created_at"],
-    }
-
-
-def valid_cbe(value: str) -> bool:
-    value = value.strip()
-
-    return (
-        len(value) == 13
-        and value.isdigit()
-        and value.startswith("1000")
-    )
-
-
-def valid_telebirr(value: str) -> bool:
-    value = value.strip()
-
-    return (
-        len(value) == 10
-        and value.isdigit()
-        and (
-            value.startswith("09")
-            or value.startswith("07")
-        )
-    )
-
-
-# ============================================================
-# TELEGRAM API
-# ============================================================
-
-async def telegram_request(method: str, data: dict):
+async def telegram_request(method: str, data: dict | None = None):
     if not BOT_TOKEN:
-        return {
-            "ok": False,
-            "description": "BOT_TOKEN is not configured"
-        }
-
-    url = f"https://api.telegram.org/bot{BOT_TOKEN}/{method}"
+        return {"ok": False, "description": "BOT_TOKEN is missing"}
 
     try:
-        async with httpx.AsyncClient(timeout=15) as client:
-            response = await client.post(url, data=data)
-
+        async with httpx.AsyncClient(timeout=20) as client:
+            response = await client.post(f"{TELEGRAM_API}/{method}", json=data or {})
             return response.json()
-
     except Exception as e:
-        return {
-            "ok": False,
-            "description": str(e)
+        return {"ok": False, "description": str(e)}
+
+
+async def set_menu_button():
+    return await telegram_request(
+        "setChatMenuButton",
+        {
+            "menu_button": {
+                "type": "web_app",
+                "text": "🚀 Open Falcon",
+                "web_app": {"url": MINI_APP_URL}
+            }
         }
+    )
 
 
-async def check_channel_membership(
-    telegram_id: str,
-    channel_username: str
-):
+async def send_message(chat_id: int, text: str):
+    return await telegram_request(
+        "sendMessage",
+        {
+            "chat_id": chat_id,
+            "text": text,
+            "parse_mode": "Markdown",
+            "disable_web_page_preview": True,
+        }
+    )
+
+
+# =========================================================
+# INIT DATA VALIDATION
+# =========================================================
+
+def validate_init_data(init_data: str):
+    if not init_data or not BOT_TOKEN:
+        return None
+
+    try:
+        parsed = dict(parse_qsl(init_data, keep_blank_values=True))
+        received_hash = parsed.pop("hash", None)
+
+        if not received_hash:
+            return None
+
+        data_check_string = "\n".join(
+            f"{key}={parsed[key]}" for key in sorted(parsed.keys())
+        )
+
+        secret_key = hmac.new(
+            b"WebAppData", BOT_TOKEN.encode(), hashlib.sha256
+        ).digest()
+
+        calculated_hash = hmac.new(
+            secret_key, data_check_string.encode(), hashlib.sha256
+        ).hexdigest()
+
+        if not hmac.compare_digest(calculated_hash, received_hash):
+            return None
+
+        auth_date = int(parsed.get("auth_date", "0"))
+        if auth_date <= 0 or (time.time() - auth_date > 86400):
+            return None
+
+        user_json = parsed.get("user")
+        if not user_json:
+            return None
+
+        user = json.loads(user_json)
+        if not user.get("id"):
+            return None
+
+        return user
+
+    except Exception:
+        return None
+
+
+# =========================================================
+# CHANNEL CHECKING LOGIC
+# =========================================================
+
+async def check_channel_membership(user_id: int, channel_username: str):
     result = await telegram_request(
         "getChatMember",
-        {
-            "chat_id": channel_username,
-            "user_id": telegram_id,
-        },
+        {"chat_id": channel_username, "user_id": user_id}
     )
 
     if not result.get("ok"):
         return False
 
     member = result.get("result", {})
-    status = member.get("status", "")
-
-    return status in {
-        "creator",
-        "administrator",
-        "member",
-    }
+    status = member.get("status")
+    return status in {"member", "administrator", "creator"}
 
 
-async def check_all_channels(telegram_id: str):
-    results = []
+async def check_all_channels(user_id: int):
+    async def check(channel):
+        joined = await check_channel_membership(user_id, channel["username"])
+        return {**channel, "joined": joined}
 
-    for channel in REQUIRED_CHANNELS:
-        joined = await check_channel_membership(
-            telegram_id,
-            channel["username"],
-        )
-
-        results.append(
-            {
-                "username": channel["username"],
-                "name": channel["name"],
-                "url": channel["url"],
-                "joined": joined,
-            }
-        )
-
-    return results
-
-
-# ============================================================
-# HOME
-# ============================================================
-
-@app.get("/")
-async def home():
-    if os.path.exists("index.html"):
-        return FileResponse("index.html")
-
-    return JSONResponse(
-        {
-            "name": "Falcon World",
-            "status": "online",
-            "version": "1.0.0",
-        }
-    )
-
-
-@app.get("/health")
-async def health():
-    return {
-        "status": "ok",
-        "service": "Falcon World",
-        "bot": BOT_USERNAME,
-    }
-
-
-# ============================================================
-# CHANNELS
-# ============================================================
-
-@app.get("/api/channels")
-async def channels():
-    return {
-        "channels": REQUIRED_CHANNELS
-    }
-
-
-@app.get("/api/check-membership/{telegram_id}")
-async def membership(telegram_id: str):
-
-    results = await check_all_channels(telegram_id)
-
-    all_joined = all(
-        channel["joined"]
-        for channel in results
-    )
+    results = await asyncio.gather(*(check(ch) for ch in REQUIRED_CHANNELS))
+    verified_count = sum(1 for ch in results if ch["joined"])
+    verified = (verified_count == len(REQUIRED_CHANNELS))
 
     return {
-        "telegram_id": telegram_id,
-        "all_joined": all_joined,
+        "verified": verified,
+        "verified_count": verified_count,
+        "total": len(REQUIRED_CHANNELS),
         "channels": results,
     }
 
 
-# ============================================================
-# REGISTER
-# ============================================================
+# =========================================================
+# ENDPOINTS
+# =========================================================
 
-@app.post("/api/register")
-async def register(data: RegisterRequest):
+@app.get("/")
+async def home():
+    return {"status": "online", "app": "Falcon World"}
 
-    telegram_id = str(data.telegram_id)
 
-    if not telegram_id:
-        raise HTTPException(
-            status_code=400,
-            detail="Telegram ID is required",
-        )
+@app.get("/health")
+async def health():
+    return {"status": "ok"}
 
-    conn = get_db()
 
-    existing = conn.execute(
-        "SELECT * FROM users WHERE telegram_id = ?",
-        (telegram_id,),
-    ).fetchone()
+@app.get("/app", response_class=HTMLResponse)
+async def mini_app():
+    html = r"""
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>Falcon World</title>
+<script src="https://telegram.org/js/telegram-web-app.js"></script>
 
-    if existing:
-        conn.execute(
-            """
-            UPDATE users
-            SET username = ?, first_name = ?
-            WHERE telegram_id = ?
-            """,
-            (
-                data.username or "",
-                data.first_name or "",
-                telegram_id,
-            ),
-        )
+<style>
+* {
+    box-sizing: border-box;
+    -webkit-tap-highlight-color: transparent;
+}
 
-        conn.commit()
+html, body {
+    margin: 0;
+    padding: 0;
+    width: 100%;
+    min-height: 100%;
+    background: #030712;
+    color: #ffffff;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    overflow-x: hidden;
+}
 
-        user = conn.execute(
-            "SELECT * FROM users WHERE telegram_id = ?",
-            (telegram_id,),
-        ).fetchone()
+/* Background Effects */
+.app-bg {
+    position: fixed;
+    inset: 0;
+    z-index: -2;
+    background: 
+        radial-gradient(circle at 50% 0%, rgba(37, 99, 235, 0.35), transparent 50%),
+        radial-gradient(circle at 100% 100%, rgba(14, 165, 233, 0.15), transparent 45%),
+        #030712;
+}
 
-        conn.close()
+.glow {
+    position: fixed;
+    width: 300px;
+    height: 300px;
+    border-radius: 50%;
+    background: rgba(59, 130, 246, 0.15);
+    filter: blur(80px);
+    top: -100px;
+    left: 50%;
+    transform: translateX(-50%);
+    z-index: -1;
+}
 
-        return {
-            "success": True,
-            "new_user": False,
-            "user": user_dict(user),
+/* Loading Screen */
+#loadingScreen {
+    position: fixed;
+    inset: 0;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    background: #030712;
+    z-index: 9999;
+    transition: opacity 0.4s ease, visibility 0.4s ease;
+}
+
+#loadingScreen.hide {
+    opacity: 0;
+    visibility: hidden;
+}
+
+.falcon-loader {
+    width: 100px;
+    height: 100px;
+    border-radius: 28px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 50px;
+    background: linear-gradient(145deg, rgba(59,130,246,0.3), rgba(15,23,42,0.9));
+    border: 1px solid rgba(148,163,184,0.3);
+    box-shadow: 0 0 35px rgba(37,99,235,0.4);
+    animation: pulse 1.5s ease-in-out infinite;
+}
+
+.loading-title {
+    margin-top: 20px;
+    font-size: 22px;
+    font-weight: 800;
+    letter-spacing: 2px;
+}
+
+/* App Layout */
+#appContent {
+    display: none;
+    padding: 20px 16px 30px;
+}
+
+#appContent.show {
+    display: block;
+}
+
+.brand {
+    text-align: center;
+    margin-bottom: 20px;
+}
+
+.brand-icon {
+    width: 60px;
+    height: 60px;
+    margin: 0 auto 10px;
+    border-radius: 20px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 30px;
+    background: linear-gradient(135deg, #2563eb, #0284c7);
+    box-shadow: 0 8px 25px rgba(37,99,235,0.3);
+}
+
+.brand-title {
+    font-size: 24px;
+    font-weight: 900;
+    letter-spacing: 1.5px;
+}
+
+.brand-subtitle {
+    color: #94a3b8;
+    font-size: 13px;
+    margin-top: 4px;
+}
+
+/* Cards & Components */
+.verify-card {
+    padding: 20px;
+    border-radius: 20px;
+    background: rgba(15, 23, 42, 0.75);
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    backdrop-filter: blur(16px);
+    box-shadow: 0 10px 30px rgba(0,0,0,0.3);
+}
+
+.verify-title {
+    font-size: 18px;
+    font-weight: 800;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.progress-row {
+    display: flex;
+    justify-content: space-between;
+    margin-top: 15px;
+    font-size: 13px;
+    color: #94a3b8;
+}
+
+.progress-bar {
+    width: 100%;
+    height: 8px;
+    margin-top: 8px;
+    border-radius: 10px;
+    background: rgba(255, 255, 255, 0.08);
+    overflow: hidden;
+}
+
+.progress-fill {
+    width: 0%;
+    height: 100%;
+    background: linear-gradient(90deg, #2563eb, #38bdf8);
+    transition: width 0.4s ease;
+}
+
+/* Channel List */
+.channel-list {
+    margin-top: 16px;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+}
+
+.channel-card {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 12px 14px;
+    border-radius: 16px;
+    background: rgba(15, 23, 42, 0.6);
+    border: 1px solid rgba(255, 255, 255, 0.05);
+}
+
+.channel-info {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+}
+
+.channel-icon {
+    width: 40px;
+    height: 40px;
+    border-radius: 12px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 18px;
+    background: rgba(37, 99, 235, 0.15);
+    border: 1px solid rgba(59, 130, 246, 0.2);
+}
+
+.channel-name {
+    font-size: 14px;
+    font-weight: 700;
+}
+
+.channel-username {
+    font-size: 12px;
+    color: #64748b;
+}
+
+.channel-button {
+    border: none;
+    padding: 8px 16px;
+    border-radius: 10px;
+    background: #2563eb;
+    color: white;
+    font-size: 13px;
+    font-weight: 700;
+    cursor: pointer;
+    transition: all 0.2s ease;
+}
+
+.channel-button.joined {
+    background: rgba(34, 197, 94, 0.15);
+    color: #4ade80;
+    border: 1px solid rgba(74, 222, 128, 0.3);
+    cursor: default;
+}
+
+.check-button {
+    width: 100%;
+    margin-top: 20px;
+    padding: 15px;
+    border: none;
+    border-radius: 16px;
+    background: linear-gradient(135deg, #2563eb, #0284c7);
+    color: white;
+    font-size: 15px;
+    font-weight: 800;
+    cursor: pointer;
+    box-shadow: 0 8px 25px rgba(37, 99, 235, 0.3);
+}
+
+.check-button:disabled {
+    opacity: 0.6;
+}
+
+/* Dashboard View */
+.dashboard {
+    display: none;
+    text-align: center;
+    padding: 20px 0;
+}
+
+.dashboard.show {
+    display: block;
+}
+
+.dash-card {
+    background: rgba(15, 23, 42, 0.8);
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    border-radius: 20px;
+    padding: 30px 20px;
+    margin-top: 20px;
+}
+
+@keyframes pulse {
+    0%, 100% { transform: scale(1); }
+    50% { transform: scale(1.05); }
+}
+</style>
+</head>
+<body>
+
+<div class="app-bg"></div>
+<div class="glow"></div>
+
+<!-- LOADING SCREEN -->
+<div id="loadingScreen">
+    <div class="falcon-loader">🦅</div>
+    <div class="loading-title">FALCON WORLD</div>
+</div>
+
+<!-- MAIN CONTENT -->
+<div id="appContent">
+
+    <div class="brand">
+        <div class="brand-icon">🦅</div>
+        <div class="brand-title">FALCON WORLD</div>
+        <div class="brand-subtitle">Earn • Refer • Grow</div>
+    </div>
+
+    <!-- VERIFICATION SECTION -->
+    <div id="verificationArea">
+        <div class="verify-card">
+            <div class="verify-title">🔐 REQUIRED CHANNELS</div>
+            <div style="font-size: 13px; color: #94a3b8; margin-top: 4px;">
+                Join all required channels to access the bot main menu.
+            </div>
+
+            <div class="progress-row">
+                <span>Progress</span>
+                <span id="progressCount" style="color: #60a5fa; font-weight: 800;">0/6</span>
+            </div>
+            <div class="progress-bar">
+                <div id="progressFill" class="progress-fill"></div>
+            </div>
+        </div>
+
+        <div id="channelList" class="channel-list"></div>
+
+        <button id="checkButton" class="check-button" onclick="checkMembership(true)">
+            🔄 Check Verification
+        </button>
+    </div>
+
+    <!-- MAIN DASHBOARD (HIDDEN UNTIL VERIFIED) -->
+    <div id="dashboard" class="dashboard">
+        <div style="font-size: 60px;">🎉</div>
+        <h2 style="font-size: 26px; font-weight: 900; margin-top: 10px;">WELCOME ABOARD!</h2>
+        <p style="color: #94a3b8; font-size: 14px;">Your verification was successful.</p>
+
+        <div class="dash-card">
+            <h3 style="margin: 0; color: #60a5fa;">🚀 Falcon Earning Dashboard</h3>
+            <p style="color: #64748b; font-size: 13px; margin-top: 10px;">
+                You now have full access to Falcon World tasks, daily rewards, and referrals!
+            </p>
+        </div>
+    </div>
+
+</div>
+
+<script>
+const tg = window.Telegram.WebApp;
+tg.ready();
+tg.expand();
+
+let initData = tg.initData || "";
+
+function openChannel(url) {
+    try {
+        if (tg && typeof tg.openTelegramLink === "function") {
+            tg.openTelegramLink(url);
+        } else {
+            window.open(url, "_blank");
         }
+    } catch (e) {
+        window.open(url, "_blank");
+    }
+}
 
-    referred_by = str(data.referral or "").strip()
-
-    # Prevent self-referral
-    if referred_by == telegram_id:
-        referred_by = ""
-
-    conn.execute(
-        """
-        INSERT INTO users (
-            telegram_id,
-            username,
-            first_name,
-            referred_by
-        )
-        VALUES (?, ?, ?, ?)
-        """,
-        (
-            telegram_id,
-            data.username or "",
-            data.first_name or "",
-            referred_by,
-        ),
-    )
-
-    conn.commit()
-
-    user = conn.execute(
-        "SELECT * FROM users WHERE telegram_id = ?",
-        (telegram_id,),
-    ).fetchone()
-
-    conn.close()
-
-    return {
-        "success": True,
-        "new_user": True,
-        "user": user_dict(user),
+async function checkMembership(userClicked = false) {
+    const btn = document.getElementById("checkButton");
+    if (userClicked) {
+        btn.disabled = true;
+        btn.innerText = "Checking...";
     }
 
-
-# ============================================================
-# USER
-# ============================================================
-
-@app.get("/api/me/{telegram_id}")
-async def me(telegram_id: str):
-
-    user = get_user(telegram_id)
-
-    if not user:
-        raise HTTPException(
-            status_code=404,
-            detail="User not found",
-        )
-
-    return {
-        "success": True,
-        "user": user_dict(user),
-    }
-
-
-# ============================================================
-# REFERRAL
-# ============================================================
-
-@app.get("/api/referral/{telegram_id}")
-async def referral(telegram_id: str):
-
-    user = get_user(telegram_id)
-
-    if not user:
-        raise HTTPException(
-            status_code=404,
-            detail="User not found",
-        )
-
-    referral_link = (
-        f"https://t.me/{BOT_USERNAME}"
-        f"?start=ref_{telegram_id}"
-    )
-
-    return {
-        "success": True,
-        "count": user["referral_count"],
-        "reward": REFERRAL_REWARD,
-        "link": referral_link,
-    }
-
-
-@app.post("/api/referral")
-async def referral_data(data: ReferralRequest):
-
-    user = get_user(data.telegram_id)
-
-    if not user:
-        raise HTTPException(
-            status_code=404,
-            detail="User not found",
-        )
-
-    return {
-        "success": True,
-        "count": user["referral_count"],
-        "reward": REFERRAL_REWARD,
-        "link": (
-            f"https://t.me/{BOT_USERNAME}"
-            f"?start=ref_{data.telegram_id}"
-        ),
-    }
-
-
-# ============================================================
-# DAILY BONUS
-# ============================================================
-
-@app.post("/api/daily-bonus")
-async def daily_bonus(data: DailyBonusRequest):
-
-    user = get_user(data.telegram_id)
-
-    if not user:
-        raise HTTPException(
-            status_code=404,
-            detail="User not found",
-        )
-
-    today = datetime.utcnow().strftime("%Y-%m-%d")
-
-    if user["daily_claim"] == today:
-        return {
-            "success": False,
-            "claimed": True,
-            "message": "Daily bonus already claimed today.",
-            "balance": round(float(user["balance"]), 2),
-        }
-
-    conn = get_db()
-
-    new_balance = float(user["balance"]) + DAILY_BONUS
-
-    conn.execute(
-        """
-        UPDATE users
-        SET balance = ?, daily_claim = ?
-        WHERE telegram_id = ?
-        """,
-        (
-            new_balance,
-            today,
-            data.telegram_id,
-        ),
-    )
-
-    conn.commit()
-    conn.close()
-
-    return {
-        "success": True,
-        "claimed": True,
-        "reward": DAILY_BONUS,
-        "balance": round(new_balance, 2),
-    }
-
-
-# ============================================================
-# WALLET
-# ============================================================
-
-@app.post("/api/wallet")
-async def save_wallet(data: WalletRequest):
-
-    cbe = data.cbe.strip()
-    telebirr = data.telebirr.strip()
-
-    if cbe and not valid_cbe(cbe):
-        raise HTTPException(
-            status_code=400,
-            detail="Invalid CBE account. It must be 13 digits and start with 1000.",
-        )
-
-    if telebirr and not valid_telebirr(telebirr):
-        raise HTTPException(
-            status_code=400,
-            detail="Invalid Telebirr number. It must be 10 digits and start with 09 or 07.",
-        )
-
-    user = get_user(data.telegram_id)
-
-    if not user:
-        raise HTTPException(
-            status_code=404,
-            detail="User not found",
-        )
-
-    conn = get_db()
-
-    conn.execute(
-        """
-        UPDATE users
-        SET cbe = ?, telebirr = ?
-        WHERE telegram_id = ?
-        """,
-        (
-            cbe,
-            telebirr,
-            data.telegram_id,
-        ),
-    )
-
-    conn.commit()
-
-    user = conn.execute(
-        "SELECT * FROM users WHERE telegram_id = ?",
-        (data.telegram_id,),
-    ).fetchone()
-
-    conn.close()
-
-    return {
-        "success": True,
-        "user": user_dict(user),
-    }
-
-
-@app.get("/api/wallet/{telegram_id}")
-async def wallet(telegram_id: str):
-
-    user = get_user(telegram_id)
-
-    if not user:
-        raise HTTPException(
-            status_code=404,
-            detail="User not found",
-        )
-
-    return {
-        "success": True,
-        "cbe": user["cbe"],
-        "telebirr": user["telebirr"],
-    }
-
-
-# ============================================================
-# WITHDRAW
-# ============================================================
-
-@app.post("/api/withdraw")
-async def withdraw(data: WithdrawRequest):
-
-    user = get_user(data.telegram_id)
-
-    if not user:
-        raise HTTPException(
-            status_code=404,
-            detail="User not found",
-        )
-
-    if data.amount < MIN_WITHDRAW:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Minimum withdrawal is {MIN_WITHDRAW} ETB.",
-        )
-
-    if data.amount > float(user["balance"]):
-        raise HTTPException(
-            status_code=400,
-            detail="Insufficient balance.",
-        )
-
-    method = data.method.strip().lower()
-
-    if method not in {"cbe", "telebirr"}:
-        raise HTTPException(
-            status_code=400,
-            detail="Invalid withdrawal method.",
-        )
-
-    account = data.account.strip()
-
-    if method == "cbe" and not valid_cbe(account):
-        raise HTTPException(
-            status_code=400,
-            detail="Invalid CBE account.",
-        )
-
-    if method == "telebirr" and not valid_telebirr(account):
-        raise HTTPException(
-            status_code=400,
-            detail="Invalid Telebirr number.",
-        )
-
-    conn = get_db()
-
-    new_balance = float(user["balance"]) - data.amount
-
-    conn.execute(
-        """
-        UPDATE users
-        SET balance = ?
-        WHERE telegram_id = ?
-        """,
-        (
-            new_balance,
-            data.telegram_id,
-        ),
-    )
-
-    conn.execute(
-        """
-        INSERT INTO withdrawals (
-            telegram_id,
-            amount,
-            method,
-            account,
-            status
-        )
-        VALUES (?, ?, ?, ?, ?)
-        """,
-        (
-            data.telegram_id,
-            data.amount,
-            method,
-            account,
-            "Pending",
-        ),
-    )
-
-    conn.commit()
-    conn.close()
-
-    return {
-        "success": True,
-        "message": "Withdrawal request submitted.",
-        "amount": data.amount,
-        "status": "Pending",
-        "balance": round(new_balance, 2),
-    }
-
-
-# ============================================================
-# WITHDRAWAL HISTORY
-# ============================================================
-
-@app.get("/api/withdrawals/{telegram_id}")
-async def withdrawals(telegram_id: str):
-
-    user = get_user(telegram_id)
-
-    if not user:
-        raise HTTPException(
-            status_code=404,
-            detail="User not found",
-        )
-
-    conn = get_db()
-
-    rows = conn.execute(
-        """
-        SELECT
-            id,
-            amount,
-            method,
-            account,
-            status,
-            created_at
-        FROM withdrawals
-        WHERE telegram_id = ?
-        ORDER BY id DESC
-        """,
-        (telegram_id,),
-    ).fetchall()
-
-    conn.close()
-
-    return {
-        "success": True,
-        "withdrawals": [
-            {
-                "id": row["id"],
-                "amount": row["amount"],
-                "method": row["method"],
-                "account": row["account"],
-                "status": row["status"],
-                "created_at": row["created_at"],
+    try {
+        const res = await fetch("/api/verify", {
+            method: "POST",
+            headers: {
+                "Content-Type": "application/json",
+                "X-Telegram-Init-Data": initData
+            },
+            body: JSON.stringify({})
+        });
+
+        const data = await res.json();
+
+        if (res.ok) {
+            renderChannels(data.channels || []);
+            updateProgress(data.verified_count, data.total);
+
+            if (data.verified) {
+                showDashboard();
             }
-            for row in rows
-        ],
-    }
-
-
-# ============================================================
-# TASKS
-# ============================================================
-
-@app.get("/api/tasks/{telegram_id}")
-async def tasks(telegram_id: str):
-
-    user = get_user(telegram_id)
-
-    if not user:
-        raise HTTPException(
-            status_code=404,
-            detail="User not found",
-        )
-
-    conn = get_db()
-
-    rows = conn.execute(
-        """
-        SELECT id, title, reward, url
-        FROM tasks
-        WHERE active = 1
-        ORDER BY id ASC
-        """
-    ).fetchall()
-
-    completed = conn.execute(
-        """
-        SELECT task_id
-        FROM completed_tasks
-        WHERE telegram_id = ?
-        """,
-        (telegram_id,),
-    ).fetchall()
-
-    completed_ids = {
-        row["task_id"]
-        for row in completed
-    }
-
-    conn.close()
-
-    return {
-        "success": True,
-        "tasks": [
-            {
-                "id": row["id"],
-                "title": row["title"],
-                "reward": row["reward"],
-                "url": row["url"],
-                "completed": row["id"] in completed_ids,
-            }
-            for row in rows
-        ],
-    }
-
-
-@app.post("/api/tasks/complete")
-async def complete_task(data: TaskRequest):
-
-    user = get_user(data.telegram_id)
-
-    if not user:
-        raise HTTPException(
-            status_code=404,
-            detail="User not found",
-        )
-
-    conn = get_db()
-
-    task = conn.execute(
-        """
-        SELECT *
-        FROM tasks
-        WHERE id = ? AND active = 1
-        """,
-        (data.task_id,),
-    ).fetchone()
-
-    if not task:
-        conn.close()
-
-        raise HTTPException(
-            status_code=404,
-            detail="Task not found",
-        )
-
-    already = conn.execute(
-        """
-        SELECT id
-        FROM completed_tasks
-        WHERE telegram_id = ? AND task_id = ?
-        """,
-        (
-            data.telegram_id,
-            data.task_id,
-        ),
-    ).fetchone()
-
-    if already:
-        conn.close()
-
-        return {
-            "success": False,
-            "message": "Task already completed.",
         }
-
-    reward = float(task["reward"])
-    new_balance = float(user["balance"]) + reward
-
-    conn.execute(
-        """
-        INSERT INTO completed_tasks (
-            telegram_id,
-            task_id
-        )
-        VALUES (?, ?)
-        """,
-        (
-            data.telegram_id,
-            data.task_id,
-        ),
-    )
-
-    conn.execute(
-        """
-        UPDATE users
-        SET balance = ?
-        WHERE telegram_id = ?
-        """,
-        (
-            new_balance,
-            data.telegram_id,
-        ),
-    )
-
-    conn.commit()
-    conn.close()
-
-    return {
-        "success": True,
-        "reward": reward,
-        "balance": round(new_balance, 2),
+    } catch (e) {
+        console.error("Verification error", e);
+    } finally {
+        if (userClicked) {
+            btn.disabled = false;
+            btn.innerText = "🔄 Check Verification";
+        }
     }
+}
 
+function renderChannels(channels) {
+    const container = document.getElementById("channelList");
+    container.innerHTML = "";
 
-# ============================================================
-# ADMIN / INFO
-# ============================================================
+    channels.forEach(ch => {
+        const card = document.createElement("div");
+        card.className = "channel-card";
 
-@app.get("/api/config")
-async def config():
+        const isJoined = ch.joined;
+        const btnText = isJoined ? "Done ✓" : "Join";
+        const btnClass = isJoined ? "channel-button joined" : "channel-button";
+        const btnAction = isJoined ? "" : `onclick="openChannel('${ch.url}')"`;
 
-    return {
-        "bot_username": BOT_USERNAME,
-        "admin": ADMIN_USERNAME,
-        "daily_bonus": DAILY_BONUS,
-        "referral_reward": REFERRAL_REWARD,
-        "minimum_withdraw": MIN_WITHDRAW,
-        "channels": REQUIRED_CHANNELS,
+        card.innerHTML = `
+            <div class="channel-info">
+                <div class="channel-icon">${isJoined ? "✓" : "📢"}</div>
+                <div>
+                    <div class="channel-name">${escapeHtml(ch.name)}</div>
+                    <div class="channel-username">${escapeHtml(ch.username)}</div>
+                </div>
+            </div>
+            <button class="${btnClass}" ${btnAction}>${btnText}</button>
+        `;
+        container.appendChild(card);
+    });
+}
+
+function updateProgress(count, total) {
+    document.getElementById("progressCount").innerText = `${count}/${total}`;
+    const pct = total > 0 ? (count / total) * 100 : 0;
+    document.getElementById("progressFill").style.width = `${pct}%`;
+}
+
+function showDashboard() {
+    document.getElementById("verificationArea").style.display = "none";
+    document.getElementById("dashboard").classList.add("show");
+}
+
+function escapeHtml(str) {
+    return String(str).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+
+// Auto-check when returning to web app
+document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "visible") {
+        checkMembership(false);
     }
+});
+
+window.addEventListener("focus", () => {
+    checkMembership(false);
+});
+
+// App Start
+setTimeout(() => {
+    document.getElementById("loadingScreen").classList.add("hide");
+    document.getElementById("appContent").classList.add("show");
+    checkMembership(false);
+}, 1500);
+
+</script>
+</body>
+</html>
+"""
+    return HTMLResponse(content=html)
 
 
-# ============================================================
-# ERROR HANDLER
-# ============================================================
+@app.post("/api/verify")
+async def verify_user(request: Request):
+    init_data = request.headers.get("X-Telegram-Init-Data", "")
+    user = validate_init_data(init_data)
 
-@app.exception_handler(Exception)
-async def global_exception_handler(request, exc):
+    if not user:
+        return JSONResponse({"error": "telegram_required"}, status_code=401)
 
-    print("SERVER ERROR:", repr(exc))
+    user_id = int(user["id"])
+    verification = await check_all_channels(user_id)
+    return JSONResponse(verification)
 
-    return JSONResponse(
-        status_code=500,
-        content={
-            "success": False,
-            "error": "Internal server error",
-        },
-    )
+
+@app.post("/webhook")
+async def webhook(request: Request):
+    try:
+        update = await request.json()
+    except Exception:
+        return {"ok": True}
+
+    message = update.get("message", {})
+    chat_id = message.get("chat", {}).get("id")
+    text = message.get("text", "")
+
+    if not chat_id:
+        return {"ok": True}
+
+    if text.startswith("/start"):
+        welcome_message = """
+🦅 *WELCOME TO FALCON WORLD*
+
+💰 *Earn & Complete Tasks*
+🎁 *Daily Rewards*
+👥 *Referral Rewards*
+🚀 *New Opportunities*
+
+🚀 Open Falcon World using the button below to complete verification and enter!
+"""
+        await send_message(chat_id, welcome_message)
+
+    return {"ok": True}
+
+
+@app.on_event("startup")
+async def startup():
+    if not BOT_TOKEN:
+        print("ERROR: BOT_TOKEN is missing.")
+        return
+
+    await telegram_request("setWebhook", {"url": WEBHOOK_URL, "allowed_updates": ["message"]})
+    await set_menu_button()
