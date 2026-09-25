@@ -41,7 +41,7 @@ async def set_menu_button():
         {
             "menu_button": {
                 "type": "web_app",
-                "text": "🚀 Open Falcon World",
+                "text": "🚀 Open Falcon",
                 "web_app": {
                     "url": MINI_APP_URL
                 }
