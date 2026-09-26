@@ -1,4 +1,4 @@
-# Falcon World — single-file Telegram Bot + FastAPI Mini App
+# Falcon World â€” single-file Telegram Bot + FastAPI Mini App
 # The complete bot/database/webhook logic and Mini App API live in this file.
 # Render Start Command:
 # uvicorn server:app --host 0.0.0.0 --port $PORT
@@ -589,12 +589,12 @@ def get_pending_submissions(limit=30):
 def withdrawal_keyboard(withdrawal_id: int):
     return {
         "inline_keyboard": [[
-            {"text": "✅ Approve", "callback_data": f"wd_approve:{withdrawal_id}"},
-            {"text": "❌ Reject", "callback_data": f"wd_reject:{withdrawal_id}"},
+            {"text": "âœ… Approve", "callback_data": f"wd_approve:{withdrawal_id}"},
+            {"text": "âŒ Reject", "callback_data": f"wd_reject:{withdrawal_id}"},
         ], [
-            {"text": "🚫 Ban User", "callback_data": f"wd_ban:{withdrawal_id}"}
+            {"text": "ðŸš« Ban User", "callback_data": f"wd_ban:{withdrawal_id}"}
         ], [
-            {"text": "👥 Referral List", "callback_data": f"wd_refs:{withdrawal_id}"}
+            {"text": "ðŸ‘¥ Referral List", "callback_data": f"wd_refs:{withdrawal_id}"}
         ]]
     }
 
@@ -602,8 +602,8 @@ def withdrawal_keyboard(withdrawal_id: int):
 def task_keyboard(submission_id: int):
     return {
         "inline_keyboard": [[
-            {"text": "✅ Approve", "callback_data": f"task_approve:{submission_id}"},
-            {"text": "❌ Reject", "callback_data": f"task_reject:{submission_id}"},
+            {"text": "âœ… Approve", "callback_data": f"task_approve:{submission_id}"},
+            {"text": "âŒ Reject", "callback_data": f"task_reject:{submission_id}"},
         ]]
     }
 
@@ -611,7 +611,7 @@ def task_keyboard(submission_id: int):
 def format_user(user):
     name = html.escape(user["first_name"] or user["username"] or str(user["user_id"]))
     username = f"@{html.escape(user['username'])}" if user["username"] else "No username"
-    return f"{name} ({username}) — <code>{user['user_id']}</code>"
+    return f"{name} ({username}) â€” <code>{user['user_id']}</code>"
 
 
 async def notify_withdrawal(wid: int):
@@ -628,13 +628,13 @@ async def notify_withdrawal(wid: int):
     if not row:
         return
     text = (
-        "💸 <b>New Withdrawal</b>\n\n"
-        f"🆔 ID: <code>{row['id']}</code>\n"
-        f"👤 {format_user(row)}\n"
-        f"💰 Amount: <b>{row['amount']:.2f} ETB</b>\n"
-        f"🏦 Wallet: <b>{html.escape(row['wallet_type'])}</b>\n"
-        f"📱 Number: <code>{html.escape(row['wallet_number'])}</code>\n"
-        f"⚠️ Suspicious: {'YES' if row['suspicious'] else 'No'}"
+        "ðŸ’¸ <b>New Withdrawal</b>\n\n"
+        f"ðŸ†” ID: <code>{row['id']}</code>\n"
+        f"ðŸ‘¤ {format_user(row)}\n"
+        f"ðŸ’° Amount: <b>{row['amount']:.2f} ETB</b>\n"
+        f"ðŸ¦ Wallet: <b>{html.escape(row['wallet_type'])}</b>\n"
+        f"ðŸ“± Number: <code>{html.escape(row['wallet_number'])}</code>\n"
+        f"âš ï¸ Suspicious: {'YES' if row['suspicious'] else 'No'}"
     )
     await send_admin_message(text, withdrawal_keyboard(wid))
 
@@ -655,12 +655,12 @@ async def notify_task_submission(submission_id: int):
     if not row:
         return
     text = (
-        "📋 <b>New Task Submission</b>\n\n"
-        f"🆔 Submission: <code>{row['id']}</code>\n"
-        f"🎯 Task: <b>{html.escape(row['title'])}</b>\n"
-        f"💰 Reward: <b>{row['reward']:.2f} ETB</b>\n"
-        f"👤 {format_user(row)}\n\n"
-        f"🧾 <b>Proof:</b>\n{html.escape(row['proof'])}"
+        "ðŸ“‹ <b>New Task Submission</b>\n\n"
+        f"ðŸ†” Submission: <code>{row['id']}</code>\n"
+        f"ðŸŽ¯ Task: <b>{html.escape(row['title'])}</b>\n"
+        f"ðŸ’° Reward: <b>{row['reward']:.2f} ETB</b>\n"
+        f"ðŸ‘¤ {format_user(row)}\n\n"
+        f"ðŸ§¾ <b>Proof:</b>\n{html.escape(row['proof'])}"
     )
     await send_admin_message(text, task_keyboard(submission_id))
 
@@ -737,13 +737,13 @@ async def handle_admin_callback(query, data):
             await answer_callback(query["id"], f"Withdrawal {status_text}.")
             await edit_callback_message(
                 query,
-                f"💸 <b>Withdrawal #{wid}</b>\n\nStatus: <b>{status_text}</b>",
+                f"ðŸ’¸ <b>Withdrawal #{wid}</b>\n\nStatus: <b>{status_text}</b>",
             )
             if action in {"wd_approve", "wd_reject"}:
                 await send_message(
                     row["user_id"],
                     (
-                        f"💸 <b>Withdrawal Update</b>\n\n"
+                        f"ðŸ’¸ <b>Withdrawal Update</b>\n\n"
                         f"Amount: <b>{row['amount']:.2f} ETB</b>\n"
                         f"Status: <b>{status_text}</b>"
                     ),
@@ -751,7 +751,7 @@ async def handle_admin_callback(query, data):
             elif action == "wd_ban":
                 await send_message(
                     row["user_id"],
-                    "🚫 Your Falcon World account has been banned by an administrator.",
+                    "ðŸš« Your Falcon World account has been banned by an administrator.",
                 )
         finally:
             conn.close()
@@ -769,11 +769,11 @@ async def handle_admin_callback(query, data):
             conn.close()
         if not refs:
             await answer_callback(query["id"], "No referrals found.", True); return
-        lines=["👥 <b>Referral List</b>"]
+        lines=["ðŸ‘¥ <b>Referral List</b>"]
         for r in refs:
             name=html.escape(r["first_name"] or r["username"] or str(r["user_id"]))
             uname=f"@{html.escape(r['username'])}" if r["username"] else "No username"
-            lines.append(f"• {name} ({uname}) — <code>{r['user_id']}</code> — {'Verified' if r['verified'] else 'Unverified'}")
+            lines.append(f"â€¢ {name} ({uname}) â€” <code>{r['user_id']}</code> â€” {'Verified' if r['verified'] else 'Unverified'}")
         await send_message(admin_id, "\n".join(lines))
         await answer_callback(query["id"], "Referral list sent.")
         return
@@ -825,15 +825,15 @@ async def handle_admin_callback(query, data):
             await answer_callback(query["id"], f"Task {status_text}.")
             await edit_callback_message(
                 query,
-                f"📋 <b>Task Submission #{sid}</b>\n\nStatus: <b>{status_text}</b>",
+                f"ðŸ“‹ <b>Task Submission #{sid}</b>\n\nStatus: <b>{status_text}</b>",
             )
             await send_message(
                 row["user_id"],
                 (
-                    f"📋 <b>Task Update</b>\n\n"
+                    f"ðŸ“‹ <b>Task Update</b>\n\n"
                     f"Task: <b>{html.escape(row['title'])}</b>\n"
                     f"Status: <b>{status_text}</b>"
-                    + (f"\n💰 Reward: <b>+{row['reward']:.2f} ETB</b>" if status_text == "approved" else "")
+                    + (f"\nðŸ’° Reward: <b>+{row['reward']:.2f} ETB</b>" if status_text == "approved" else "")
                 ),
             )
         finally:
@@ -862,7 +862,7 @@ def parse_start_ref(text: str):
 
 
 def main_keyboard():
-    return {"inline_keyboard": [[{"text": "🚀 Open Falcon World", "web_app": {"url": MINI_APP_URL}}]]}
+    return {"inline_keyboard": [[{"text": "ðŸš€ Open Falcon World", "web_app": {"url": MINI_APP_URL}}]]}
 
 
 async def handle_message(message):
@@ -881,21 +881,21 @@ async def handle_message(message):
     ensure_user(user_id, username, first_name, referrer)
 
     if is_banned(user_id) and not is_admin(user_id):
-        await send_message(chat_id, "🚫 Your account is currently banned.")
+        await send_message(chat_id, "ðŸš« Your account is currently banned.")
         return
 
     if text.startswith("/start"):
         await send_message(
             chat_id,
             (
-                "🦅 <b>WELCOME TO FALCON WORLD</b>\n\n"
-                "💰 Earn & Complete Tasks\n"
-                "🎁 Daily Rewards\n"
-                "👥 Referral Rewards\n"
-                "🚀 New Opportunities\n\n"
-                "💱 USDT Exchange: Buy & Sell\n"
-                "📢 Ads & Promotions: DM @AmanM_12\n\n"
-                "🦅 <b>Tap the Falcon World button below to get started.</b>"
+                "ðŸ¦… <b>WELCOME TO FALCON WORLD</b>\n\n"
+                "ðŸ’° Earn & Complete Tasks\n"
+                "ðŸŽ Daily Rewards\n"
+                "ðŸ‘¥ Referral Rewards\n"
+                "ðŸš€ New Opportunities\n\n"
+                "ðŸ’± USDT Exchange: Buy & Sell\n"
+                "ðŸ“¢ Ads & Promotions: DM @AmanM_12\n\n"
+                "ðŸ¦… <b>Tap the Falcon World button below to get started.</b>"
             ),
         )
         return
@@ -904,63 +904,63 @@ async def handle_message(message):
     if not is_admin(user_id) and not text.startswith("/"):
         return
 
-    if text == "💰 Balance":
+    if text == "ðŸ’° Balance":
         row = get_user(user_id)
-        await send_message(chat_id, f"💰 <b>Your Balance</b>\n\n<b>{row['balance']:.2f} ETB</b>", main_keyboard())
+        await send_message(chat_id, f"ðŸ’° <b>Your Balance</b>\n\n<b>{row['balance']:.2f} ETB</b>", main_keyboard())
         return
 
-    if text == "🎁 Daily Bonus":
+    if text == "ðŸŽ Daily Bonus":
         ok, result = claim_daily_bonus(user_id)
         if ok:
             await send_message(
                 chat_id,
-                f"🎁 <b>Daily Bonus Claimed!</b>\n\n+{result['reward']:.2f} ETB\n💰 Balance: {result['balance']:.2f} ETB",
+                f"ðŸŽ <b>Daily Bonus Claimed!</b>\n\n+{result['reward']:.2f} ETB\nðŸ’° Balance: {result['balance']:.2f} ETB",
                 main_keyboard(),
             )
         elif result["error"] == "cooldown":
             hours = result["remaining"] // 3600
             minutes = (result["remaining"] % 3600) // 60
-            await send_message(chat_id, f"⏳ Daily bonus already claimed.\nTry again in {hours}h {minutes}m.", main_keyboard())
+            await send_message(chat_id, f"â³ Daily bonus already claimed.\nTry again in {hours}h {minutes}m.", main_keyboard())
         elif result["error"] == "not_verified":
-            await send_message(chat_id, "⚠️ Please verify all required channels in Falcon World first.", main_keyboard())
+            await send_message(chat_id, "âš ï¸ Please verify all required channels in Falcon World first.", main_keyboard())
         else:
-            await send_message(chat_id, "❌ Daily bonus could not be claimed.", main_keyboard())
+            await send_message(chat_id, "âŒ Daily bonus could not be claimed.", main_keyboard())
         return
 
-    if text == "👥 Invite Friends":
+    if text == "ðŸ‘¥ Invite Friends":
         link = f"https://t.me/{BOT_USERNAME}?start=ref_{user_id}"
         count = get_referral_count(user_id)
         reward = get_setting("referral_reward", DEFAULT_REFERRAL_REWARD)
         await send_message(
             chat_id,
-            f"👥 <b>Invite Friends</b>\n\n"
+            f"ðŸ‘¥ <b>Invite Friends</b>\n\n"
             f"Invite link:\n<code>{html.escape(link)}</code>\n\n"
-            f"👤 Successful referrals: <b>{count}</b>\n"
-            f"💰 Reward: <b>{reward:.2f} ETB</b> each\n\n"
+            f"ðŸ‘¤ Successful referrals: <b>{count}</b>\n"
+            f"ðŸ’° Reward: <b>{reward:.2f} ETB</b> each\n\n"
             "Reward is credited after the invited user completes verification.",
             main_keyboard(),
         )
         return
 
-    if text == "💳 Wallet Settings":
+    if text == "ðŸ’³ Wallet Settings":
         row = get_user(user_id)
         wallet = "Not set"
         if row["wallet_type"] and row["wallet_number"]:
             wallet = f"{html.escape(row['wallet_type'])}: <code>{html.escape(row['wallet_number'])}</code>"
         await send_message(
             chat_id,
-            f"💳 <b>Wallet Settings</b>\n\nCurrent: {wallet}\n\n"
+            f"ðŸ’³ <b>Wallet Settings</b>\n\nCurrent: {wallet}\n\n"
             "Use the Mini App to save CBE or Telebirr.",
             main_keyboard(),
         )
         return
 
-    if text == "💸 Withdraw":
+    if text == "ðŸ’¸ Withdraw":
         row = get_user(user_id)
         minimum = get_setting("min_withdraw", DEFAULT_MIN_WITHDRAW)
         await send_message(
             chat_id,
-            f"💸 <b>Withdraw</b>\n\n"
+            f"ðŸ’¸ <b>Withdraw</b>\n\n"
             f"Balance: <b>{row['balance']:.2f} ETB</b>\n"
             f"Minimum: <b>{minimum:.2f} ETB</b>\n\n"
             "Use the Mini App to submit a withdrawal.",
@@ -968,26 +968,26 @@ async def handle_message(message):
         )
         return
 
-    if text == "📋 Tasks":
+    if text == "ðŸ“‹ Tasks":
         tasks = get_active_tasks(user_id)
         if not tasks:
-            await send_message(chat_id, "📋 No active tasks right now.", main_keyboard())
+            await send_message(chat_id, "ðŸ“‹ No active tasks right now.", main_keyboard())
             return
-        lines = ["📋 <b>Active Tasks</b>\n"]
+        lines = ["ðŸ“‹ <b>Active Tasks</b>\n"]
         for task in tasks[:10]:
             status = task["submission_status"] or "not submitted"
             lines.append(
                 f"#{task['id']} <b>{html.escape(task['title'])}</b>\n"
-                f"💰 {task['reward']:.2f} ETB • Status: {html.escape(status)}"
+                f"ðŸ’° {task['reward']:.2f} ETB â€¢ Status: {html.escape(status)}"
             )
-        lines.append("\n🚀 Open the Mini App to complete and submit tasks.")
+        lines.append("\nðŸš€ Open the Mini App to complete and submit tasks.")
         await send_message(chat_id, "\n\n".join(lines), main_keyboard())
         return
 
-    if text == "❓ Help":
+    if text == "â“ Help":
         await send_message(
             chat_id,
-            "❓ <b>Help</b>\n\n"
+            "â“ <b>Help</b>\n\n"
             "1. Join all required channels.\n"
             "2. Verify your account.\n"
             "3. Complete tasks and daily bonus.\n"
@@ -998,10 +998,10 @@ async def handle_message(message):
         )
         return
 
-    if text == "🆘 Support":
+    if text == "ðŸ†˜ Support":
         await send_message(
             chat_id,
-            "🆘 <b>Support</b>\n\nFor support, contact the Falcon World administrator.",
+            "ðŸ†˜ <b>Support</b>\n\nFor support, contact the Falcon World administrator.",
             main_keyboard(),
         )
         return
@@ -1021,7 +1021,7 @@ async def handle_message(message):
             return
         await send_message(
             chat_id,
-            f"👤 <b>User</b>\n\n"
+            f"ðŸ‘¤ <b>User</b>\n\n"
             f"ID: <code>{target['user_id']}</code>\n"
             f"Name: {html.escape(target['first_name'] or '')}\n"
             f"Username: @{html.escape(target['username'] or 'none')}\n"
@@ -1044,8 +1044,8 @@ async def handle_message(message):
             await send_message(chat_id, "User not found.")
             return
         add_balance(target_id, amount)
-        await send_message(chat_id, f"✅ Added {amount:.2f} ETB to {target_id}.")
-        await send_message(target_id, f"💰 Admin balance adjustment: <b>+{amount:.2f} ETB</b>")
+        await send_message(chat_id, f"âœ… Added {amount:.2f} ETB to {target_id}.")
+        await send_message(target_id, f"ðŸ’° Admin balance adjustment: <b>+{amount:.2f} ETB</b>")
         return
 
     if text.startswith("/ban ") and is_admin(user_id):
@@ -1059,7 +1059,7 @@ async def handle_message(message):
             conn.commit()
         finally:
             conn.close()
-        await send_message(chat_id, "🚫 User banned.")
+        await send_message(chat_id, "ðŸš« User banned.")
         return
 
     if text.startswith("/unban ") and is_admin(user_id):
@@ -1073,25 +1073,25 @@ async def handle_message(message):
             conn.commit()
         finally:
             conn.close()
-        await send_message(chat_id, "✅ User unbanned.")
+        await send_message(chat_id, "âœ… User unbanned.")
         return
 
     if text.startswith("/setminwithdraw ") and is_admin(user_id):
         value = float(text.split(maxsplit=1)[1])
         set_setting("min_withdraw", value)
-        await send_message(chat_id, f"✅ Minimum withdrawal set to {value:.2f} ETB.")
+        await send_message(chat_id, f"âœ… Minimum withdrawal set to {value:.2f} ETB.")
         return
 
     if text.startswith("/setdaily ") and is_admin(user_id):
         value = float(text.split(maxsplit=1)[1])
         set_setting("daily_bonus", value)
-        await send_message(chat_id, f"✅ Daily bonus set to {value:.2f} ETB.")
+        await send_message(chat_id, f"âœ… Daily bonus set to {value:.2f} ETB.")
         return
 
     if text.startswith("/setref ") and is_admin(user_id):
         value = float(text.split(maxsplit=1)[1])
         set_setting("referral_reward", value)
-        await send_message(chat_id, f"✅ Referral reward set to {value:.2f} ETB.")
+        await send_message(chat_id, f"âœ… Referral reward set to {value:.2f} ETB.")
         return
 
     if text == "/channels" and is_admin(user_id):
@@ -1099,9 +1099,9 @@ async def handle_message(message):
         if not channels:
             await send_message(chat_id, "No required channels configured.")
         else:
-            lines = ["📣 <b>Required Channels</b>"]
+            lines = ["ðŸ“£ <b>Required Channels</b>"]
             for i, c in enumerate(channels, 1):
-                lines.append(f"{i}. <b>{html.escape(c['name'])}</b> — {html.escape(c['username'])}\n{html.escape(c['url'])}")
+                lines.append(f"{i}. <b>{html.escape(c['name'])}</b> â€” {html.escape(c['username'])}\n{html.escape(c['url'])}")
             lines.append("\n/addchannel @username | Name | https://t.me/username\n/removechannel @username\n/editchannel @old | @new | Name | https://t.me/new")
             await send_message(chat_id, "\n\n".join(lines))
         return
@@ -1119,11 +1119,11 @@ async def handle_message(message):
             conn.execute("INSERT INTO required_channels(username,name,url,active,created_at) VALUES(?,?,?,?,?)", (username,name,url,1,int(time.time())))
             conn.commit()
         except sqlite3.IntegrityError:
-            await send_message(chat_id, "❌ That channel is already configured.")
+            await send_message(chat_id, "âŒ That channel is already configured.")
             return
         finally:
             conn.close()
-        await send_message(chat_id, f"✅ Channel added: {html.escape(username)}")
+        await send_message(chat_id, f"âœ… Channel added: {html.escape(username)}")
         return
 
     if text.startswith("/removechannel ") and is_admin(user_id):
@@ -1136,7 +1136,7 @@ async def handle_message(message):
             conn.commit()
         finally:
             conn.close()
-        await send_message(chat_id, "✅ Channel removed." if cur.rowcount else "❌ Channel not found.")
+        await send_message(chat_id, "âœ… Channel removed." if cur.rowcount else "âŒ Channel not found.")
         return
 
     if text.startswith("/editchannel ") and is_admin(user_id):
@@ -1153,7 +1153,7 @@ async def handle_message(message):
             conn.commit()
         finally:
             conn.close()
-        await send_message(chat_id, "✅ Channel updated." if cur.rowcount else "❌ Channel not found.")
+        await send_message(chat_id, "âœ… Channel updated." if cur.rowcount else "âŒ Channel not found.")
         return
 
     if text.startswith("/addtask ") and is_admin(user_id):
@@ -1177,12 +1177,12 @@ async def handle_message(message):
             task_id = cur.lastrowid
         finally:
             conn.close()
-        await send_message(chat_id, f"✅ Task #{task_id} created.")
+        await send_message(chat_id, f"âœ… Task #{task_id} created.")
         return
 
     await send_message(
         chat_id,
-        "Use the buttons below or open Falcon World 🚀",
+        "Use the buttons below or open Falcon World ðŸš€",
         main_keyboard(),
     )
 
@@ -1201,13 +1201,13 @@ async def admin_dashboard(chat_id):
 
     await send_message(
         chat_id,
-        f"🛠 <b>Falcon World Admin</b>\n\n"
-        f"👥 Users: <b>{users}</b>\n"
-        f"✅ Verified: <b>{verified}</b>\n"
-        f"🚫 Banned: <b>{banned}</b>\n"
-        f"💰 User balances: <b>{total_balance:.2f} ETB</b>\n"
-        f"💸 Pending withdrawals: <b>{pending_wd}</b>\n"
-        f"📋 Pending tasks: <b>{pending_tasks}</b>\n\n"
+        f"ðŸ›  <b>Falcon World Admin</b>\n\n"
+        f"ðŸ‘¥ Users: <b>{users}</b>\n"
+        f"âœ… Verified: <b>{verified}</b>\n"
+        f"ðŸš« Banned: <b>{banned}</b>\n"
+        f"ðŸ’° User balances: <b>{total_balance:.2f} ETB</b>\n"
+        f"ðŸ’¸ Pending withdrawals: <b>{pending_wd}</b>\n"
+        f"ðŸ“‹ Pending tasks: <b>{pending_tasks}</b>\n\n"
         "<b>Commands</b>\n"
         "/checkuser USER_ID\n"
         "/addbalance USER_ID AMOUNT\n"
