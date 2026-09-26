@@ -1,5 +1,5 @@
 # ═══════════════════════════════════════════════════════════════
-# ⚡ MEGA SPARK — Complete System v3 (Per-Channel Auto-Check)
+# ⚡ MEGA SPARK — Complete System v4 (Admin Panel Buttons)
 # ═══════════════════════════════════════════════════════════════
 import json, hmac, hashlib, time, asyncio, os, re, sqlite3, html, secrets
 from urllib.parse import parse_qsl
@@ -498,8 +498,7 @@ async def send_admin_photo(photo_id, caption="", kb=None):
 async def check_channel_membership(uid, ch):
     r = await tg("getChatMember", {"chat_id": ch, "user_id": uid})
     if not r.get("ok"):
-        err = r.get("description", "unknown")
-        print(f"[CHANNEL-CHECK] FAILED for {ch}: {err}")
+        print(f"[CHANNEL-CHECK] FAILED for {ch}: {r.get('description','?')}")
         return False
     st = r.get("result", {}).get("status")
     if st in {"member","administrator","creator"}: return True
@@ -507,17 +506,13 @@ async def check_channel_membership(uid, ch):
     return False
 
 async def check_all_channels_parallel(uid):
-    """PARALLEL check — much faster"""
     chans = get_channels(active_only=True)
-    if not chans:
-        return False, []
+    if not chans: return False, []
     tasks = [check_channel_membership(uid, c["username"]) for c in chans]
     results = await asyncio.gather(*tasks)
     out = []
     for c, joined in zip(chans, results):
-        out.append({
-            "id": c["id"], "username": c["username"], "name": c["name"], "url": c["url"], "joined": joined
-        })
+        out.append({"id": c["id"], "username": c["username"], "name": c["name"], "url": c["url"], "joined": joined})
     all_joined = all(x["joined"] for x in out) and len(out) > 0
     return all_joined, out
 
@@ -606,10 +601,10 @@ WELCOME_MSG = (
 def wd_kb(wid):
     return {"inline_keyboard": [
         [{"text": "✅ አጽድቅ", "callback_data": f"wdok:{wid}"},
-         {"text": "❌ ውድቅ አድርግ", "callback_data": f"wdno:{wid}"}],
+         {"text": "❌ ውድቅ", "callback_data": f"wdno:{wid}"}],
         [{"text": "👥 ሪፈራሎች", "callback_data": f"wdrefs:{wid}:0"},
          {"text": "📊 ሙሉ መረጃ", "callback_data": f"wdaudit:{wid}"}],
-        [{"text": "🚫 ተጠቃሚውን አግድ", "callback_data": f"wdban:{wid}"}],
+        [{"text": "🚫 አግድ", "callback_data": f"wdban:{wid}"}],
     ]}
 
 def sub_kb(sid):
@@ -634,26 +629,23 @@ async def send_withdrawal_admin(wid):
             multi_count = int(conn.execute("SELECT COUNT(DISTINCT user_id) c FROM users WHERE device_hash=? AND user_id!=?", (u["device_hash"], u["user_id"])).fetchone()["c"])
     finally: conn.close()
     risk = "🟢 ጥሩ"
-    if u["multi_flag"] or multi_count >= 3: risk = "🔴 ከፍተኛ አደጋ"
-    elif (u["risk_score"] or 0) >= 30: risk = "🟡 መመርመር ያስፈልጋል"
-    day_note = "✅ የክፍያ ቀን" if is_payment_day() else "🛑 እሁድ — ክፍያ የለም"
+    if u["multi_flag"] or multi_count >= 3: risk = "🔴 ከፍተኛ"
+    elif (u["risk_score"] or 0) >= 30: risk = "🟡 መመርመር"
+    day_note = "✅ የክፍያ ቀን" if is_payment_day() else "🛑 እሁድ"
     text = (
-        f"💸 <b>አዲስ የዊዝድሮ ጥያቄ</b>\n\n"
+        f"💸 <b>የዊዝድሮ ጥያቄ #{wid}</b>\n\n"
         f"{fmt_user(u)}\n"
         f"🌐 IP: <code>{html.escape(u['ip_hash'] or 'unknown')}</code>\n"
         f"📱 Device: <code>{html.escape((u['device_hash'] or 'unknown')[:20])}</code>\n\n"
         f"💰 <b>መጠን: {w['amount']:.2f} ETB</b>\n"
         f"🏦 {html.escape(w['wallet_type'])}: <code>{html.escape(w['wallet_number'])}</code>\n\n"
-        f"<b>📊 ገቢ ማጠቃለያ</b>\n"
+        f"<b>📊 ገቢ</b>\n"
         f"├ 🎁 ቦነስ: {float(u['daily_earnings'] or 0):.2f}\n"
         f"├ 👥 ሪፈራል: {float(u['referral_earnings'] or 0):.2f}\n"
         f"├ 📋 ታስክ: {float(u['task_earnings'] or 0):.2f}\n"
-        f"├ 💼 አድሚን: {float(u['admin_credits'] or 0):.2f}\n"
-        f"└ <b>ጠቅላላ: {float(u['total_earned'] or 0):.2f} ETB</b>\n\n"
-        f"<b>👥 ሪፈራሎች</b>: {refs_total} ጠቅላላ, {refs_paid} የተከፈሉ\n"
-        f"ተመሳሳይ ስልክ ተጠቃሚ: {multi_count}\n\n"
-        f"<b>🛡 ስጋት</b>: {risk} ({u['risk_score'] or 0})\n"
-        f"Multi-flag: {'🚨 አዎ' if u['multi_flag'] else 'አይ'}\n"
+        f"└ <b>ጠቅላላ: {float(u['total_earned'] or 0):.2f}</b>\n\n"
+        f"👥 ሪፈራሎች: {refs_total} ({refs_paid} የተከፈሉ)\n"
+        f"🛡 ስጋት: {risk} ({u['risk_score'] or 0})\n"
         f"📅 {day_note}"
     )
     await send_admin(text, wd_kb(wid))
@@ -667,7 +659,7 @@ async def send_submission_admin(sid):
     finally: conn.close()
     if not s or not u: return
     cap = (
-        f"📋 <b>አዲስ የታስክ ማስረጃ #{sid}</b>\n\n"
+        f"📋 <b>የታስክ ማስረጃ #{sid}</b>\n\n"
         f"{fmt_user(u)}\n\n"
         f"📌 ታስክ: <b>{html.escape(s['title'])}</b>\n"
         f"💰 ሽልማት: {s['reward']:.2f} ETB\n\n"
@@ -684,23 +676,40 @@ async def user_audit(cid, tid):
     refs = get_all_referrals(tid)
     refs_paid = get_referral_count(tid)
     text = (
-        f"👤 <b>ተጠቃሚ መረጃ</b>\n\n"
+        f"👤 <b>ተጠቃሚ</b>\n\n"
         f"ስም: {html.escape(u['first_name'] or '')} {html.escape(u['last_name'] or '')}\n"
         f"@{html.escape(u['username'] or 'none')}\n"
-        f"🆔 <code>{u['user_id']}</code>\n"
-        f"🌐 IP: <code>{html.escape(u['ip_hash'] or '?')}</code>\n"
-        f"📱 Device: <code>{html.escape((u['device_hash'] or '?')[:20])}</code>\n\n"
+        f"🆔 <code>{u['user_id']}</code>\n\n"
         f"💼 ባላንስ: <b>{float(u['balance'] or 0):.2f}</b>\n"
-        f"📈 ጠቅላላ ገቢ: {float(u['total_earned'] or 0):.2f}\n"
-        f"📉 ጠቅላላ ወጪ: {float(u['total_withdrawn'] or 0):.2f}\n"
-        f"🎁 ቦነስ: {float(u['daily_earnings'] or 0):.2f}\n"
-        f"👥 ሪፈራል: {float(u['referral_earnings'] or 0):.2f}\n"
-        f"📋 ታስክ: {float(u['task_earnings'] or 0):.2f}\n\n"
+        f"📈 ገቢ: {float(u['total_earned'] or 0):.2f}\n"
+        f"📉 ወጪ: {float(u['total_withdrawn'] or 0):.2f}\n\n"
         f"👥 ሪፈራሎች: {len(refs)} ({refs_paid} የተከፈሉ)\n"
-        f"🚫 Multi-flag: {'አዎ' if u['multi_flag'] else 'አይ'}\n"
-        f"🛡 ስጋት: {u['risk_score'] or 0} — {html.escape(u['risk_flags'] or 'none')}"
+        f"🚫 Multi: {'አዎ' if u['multi_flag'] else 'አይ'}\n"
+        f"🛡 ስጋት: {u['risk_score'] or 0}\n"
+        f"Flags: {html.escape(u['risk_flags'] or 'none')}"
     )
     await send(cid, text)
+
+# ═══════════════════════════════════════════════════════════════
+# ADMIN PANEL — BUTTONS
+# ═══════════════════════════════════════════════════════════════
+def admin_kb():
+    conn = db()
+    try:
+        pw = conn.execute("SELECT COUNT(*) c FROM withdrawals WHERE status='pending'").fetchone()["c"]
+        pt = conn.execute("SELECT COUNT(*) c FROM task_submissions WHERE status='pending'").fetchone()["c"]
+        fu = conn.execute("SELECT COUNT(*) c FROM users WHERE risk_score>=30 AND banned=0").fetchone()["c"]
+    finally: conn.close()
+    return {"inline_keyboard": [
+        [{"text": f"💸 ዊዝድሮ ({pw})", "callback_data": "adm_wd"},
+         {"text": f"📋 ታስክ ({pt})", "callback_data": "adm_tasks"}],
+        [{"text": "👥 ተጠቃሚዎች", "callback_data": "adm_users"},
+         {"text": "📢 ቻናሎች", "callback_data": "adm_channels"}],
+        [{"text": "⚙️ ቅንብሮች", "callback_data": "adm_settings"},
+         {"text": "🛡 አደጋ", "callback_data": "adm_fraud"}],
+        [{"text": "🔧 ጥገና", "callback_data": "adm_maint"},
+         {"text": "🔄 Refresh", "callback_data": "adm_refresh"}],
+    ]}
 
 async def admin_dash(cid):
     conn = db()
@@ -709,7 +718,6 @@ async def admin_dash(cid):
         verified = conn.execute("SELECT COUNT(*) c FROM users WHERE verified=1").fetchone()["c"]
         banned = conn.execute("SELECT COUNT(*) c FROM users WHERE banned=1").fetchone()["c"]
         multi = conn.execute("SELECT COUNT(*) c FROM users WHERE multi_flag=1").fetchone()["c"]
-        flagged = conn.execute("SELECT COUNT(*) c FROM users WHERE risk_score>=30").fetchone()["c"]
         tb = conn.execute("SELECT COALESCE(SUM(balance),0) s FROM users").fetchone()["s"]
         te = conn.execute("SELECT COALESCE(SUM(total_earned),0) s FROM users").fetchone()["s"]
         tw = conn.execute("SELECT COALESCE(SUM(total_withdrawn),0) s FROM users").fetchone()["s"]
@@ -721,24 +729,18 @@ async def admin_dash(cid):
     min_wd = get_setting("minimum_withdrawal", DEFAULT_MIN_WITHDRAW, kind=float)
     payment_day = is_payment_day()
     await send(cid,
-        f"🛡 <b>Mega Spark Admin Panel</b>\n\n"
-        f"👥 ተጠቃሚዎች: <b>{users}</b>  ✅ {verified}\n"
-        f"🚫 የተከለከሉ: {banned}  🚨 Multi: {multi}  ⚠️ Flagged: {flagged}\n"
+        f"🛡 <b>Mega Spark Admin</b>\n\n"
+        f"👥 ተጠቃሚዎች: <b>{users}</b>  ✅ {verified}  🚫 {banned}\n"
+        f"🚨 Multi: {multi}\n\n"
         f"💼 ጠቅላላ ባላንስ: <b>{tb:.2f} ETB</b>\n"
-        f"📈 ጠቅላላ ገቢ: {te:.2f}  📉 ጠቅላላ ወጪ: {tw:.2f}\n\n"
-        f"💸 በመጠባበቅ ላይ ያለ ዊዝድሮ: <b>{pw}</b>\n"
-        f"📋 በመጠባበቅ ላይ ያለ ታስክ: <b>{pt}</b>\n\n"
-        f"<b>⚙️ የአሁኑ ቅንብሮች</b>\n"
-        f"👥 ሪፈራል: <b>{ref_rate:.2f} ETB</b>\n"
-        f"🎁 ዴይሊ: <b>{day_rate:.2f} ETB</b>\n"
-        f"💸 ሚኒማም ዊዝድሮ: <b>{min_wd:.2f} ETB</b>\n"
-        f"📅 ዛሬ: {'✅ የክፍያ ቀን' if payment_day else '🛑 እሁድ'}\n\n"
-        "<b>📋 Commands</b>\n"
-        "/admin — ዳሽቦርድ\n/stats — ስታቲስቲክስ\n/checkuser ID\n"
-        "/addbalance ID AMT\n/testbalance ID AMT\n/ban ID [reason]\n/unban ID\n"
-        "/setref AMT\n/setdaily AMT\n/setminwithdraw AMT\n"
-        "/channels\n/addchannel @u | Name | URL\n/removechannel @u\n/togglechannel @u\n/editchannel @old | @new | Name | URL\n"
-        "/addtask Title | Desc | Reward | URL\n/deltask ID\n/tasks\n/withdrawals\n/maintenance")
+        f"📈 ገቢ: {te:.2f}  📉 ወጪ: {tw:.2f}\n\n"
+        f"💸 ዊዝድሮ: <b>{pw}</b>  📋 ታስክ: <b>{pt}</b>\n\n"
+        f"<b>⚙️ ቅንብሮች</b>\n"
+        f"👥 ሪፈራል: <b>{ref_rate:.2f}</b>  🎁 ዴይሊ: <b>{day_rate:.2f}</b>\n"
+        f"💸 ሚኒማም: <b>{min_wd:.2f}</b> ETB\n"
+        f"📅 {'✅ የክፍያ ቀን' if payment_day else '🛑 እሁድ'}\n\n"
+        "👇 <b>ይምረጡ</b>",
+        admin_kb())
 
 # ─── Bot handlers ───
 async def handle_message(msg):
@@ -770,7 +772,7 @@ async def handle_message(msg):
         await send(cid,
             "⚡ <b>Mega Spark እርዳታ</b>\n\n"
             "1. Menu ቁልፍ ተጭነው ይክፈቱ\n2. Captcha ያረጋግጡ\n"
-            "3. ቻናሎቹን ይቀላቀሉ\n4. ያግኙ\n5. ከ 30 ETB በላይ ሲሆን ያውጡ\n\n"
+            "3. ቻናሎቹን ይቀላለቁ\n4. ያግኙ\n5. ከ 30 ETB በላይ ሲሆን ያውጡ\n\n"
             "⚠️ ብዙ አካውንት = ክፍያ ውድቅ\n\n"
             f"📞 ድጋፍ: {SUPPORT_USERNAME}")
         return
@@ -779,7 +781,7 @@ async def handle_message(msg):
         await send(cid, "ጀምር ለማድረግ /start ይላኩ ወይም Menu ቁልፍ ይጫኑ 🚀")
         return
 
-    if text.startswith("/admin") or text.startswith("/stats"):
+    if text.startswith("/admin") or text.startswith("/stats") or text == "/panel":
         await admin_dash(cid); return
 
     if text.startswith("/checkuser"):
@@ -808,10 +810,10 @@ async def handle_message(msg):
         try:
             conn.execute("UPDATE users SET is_test=1 WHERE user_id=?", (tid,)); conn.commit()
         finally: conn.close()
-        if amt > 0: credit(tid, amt, "admin", f"TEST balance by {uid}", admin_id=uid)
+        if amt > 0: credit(tid, amt, "admin", f"TEST by {uid}", admin_id=uid)
         elif amt < 0: debit(tid, abs(amt), "admin", f"TEST deduct by {uid}", admin_id=uid)
         log_admin(uid, "testbalance", tid, "", amt)
-        await send(cid, f"🧪 የቴስት ባላንስ {amt:+.2f} ETB ለ {tid}"); return
+        await send(cid, f"🧪 ቴስት {amt:+.2f} ETB ለ {tid}"); return
 
     if text.startswith("/ban"):
         p = text.split()
@@ -844,7 +846,7 @@ async def handle_message(msg):
         except: await send(cid, "ልክ ያልሆነ ቁጥር"); return
         old = get_setting("referral_reward", DEFAULT_REFERRAL, kind=float)
         set_setting("referral_reward", v); log_admin(uid, "setref", "", old, v)
-        await send(cid, f"✅ ሪፈራል ዋጋ: <b>{old:.2f}</b> → <b>{v:.2f} ETB</b>"); return
+        await send(cid, f"✅ ሪፈራል: <b>{old:.2f}</b> → <b>{v:.2f} ETB</b>"); return
 
     if text.startswith("/setdaily"):
         p = text.split()
@@ -862,11 +864,11 @@ async def handle_message(msg):
         except: await send(cid, "ልክ ያልሆነ ቁጥር"); return
         old = get_setting("minimum_withdrawal", DEFAULT_MIN_WITHDRAW, kind=float)
         set_setting("minimum_withdrawal", v); log_admin(uid, "setminwithdraw", "", old, v)
-        await send(cid, f"✅ ሚኒማም ዊዝድሮ: <b>{old:.2f}</b> → <b>{v:.2f} ETB</b>"); return
+        await send(cid, f"✅ ሚኒማም: <b>{old:.2f}</b> → <b>{v:.2f} ETB</b>"); return
 
     if text == "/channels":
         ch = get_channels(active_only=False)
-        lines = ["📢 <b>የግዴታ ቻናሎች</b>\n"]
+        lines = ["📢 <b>ቻናሎች</b>\n"]
         for c in ch:
             st = "✅" if c["active"] else "❌"
             lines.append(f"{st} <b>{html.escape(c['name'])}</b> — {html.escape(c['username'])}")
@@ -910,7 +912,7 @@ async def handle_message(msg):
             n = 0 if r["active"] else 1
             conn.execute("UPDATE required_channels SET active=?, updated_at=? WHERE username=?", (n, int(time.time()), u)); conn.commit()
         finally: conn.close()
-        await send(cid, f"✅ አሁን {'ንቁ' if n else 'ተዘግቷል'}"); return
+        await send(cid, f"✅ {'ንቁ' if n else 'ተዘግቷል'}"); return
 
     if text.startswith("/editchannel"):
         parts = [x.strip() for x in text.split("|", 3)]
@@ -938,7 +940,7 @@ async def handle_message(msg):
             conn.commit(); tid = cur.lastrowid
         finally: conn.close()
         log_admin(uid, "addtask", tid)
-        await send(cid, f"✅ ታስክ #{tid} ተፈጥሯል\n\nተጠቃሚዎች screenshot ከ <code>#T{tid}</code> ጋር ይልካሉ"); return
+        await send(cid, f"✅ ታስክ #{tid}\n\nScreenshot ከ <code>#T{tid}</code> ጋር ይላካል"); return
 
     if text.startswith("/deltask"):
         p = text.split()
@@ -961,16 +963,19 @@ async def handle_message(msg):
     if text == "/withdrawals":
         conn = db()
         try:
-            wds = conn.execute("SELECT id FROM withdrawals WHERE status='pending' ORDER BY id ASC LIMIT 10").fetchall()
+            wds = conn.execute("SELECT id FROM withdrawals WHERE status='pending' ORDER BY id ASC LIMIT 20").fetchall()
         finally: conn.close()
-        if not wds: await send(cid, "በመጠባበቅ ላይ ያለ ዊዝድሮ የለም"); return
-        for w in wds: await send_withdrawal_admin(w["id"])
+        if not wds: await send(cid, "✅ በመጠባበቅ ላይ ያለ የለም"); return
+        await send(cid, f"💸 <b>{len(wds)} ዊዝድሮዎች</b>")
+        for w in wds:
+            await send_withdrawal_admin(w["id"])
+            await asyncio.sleep(0.3)
         return
 
     if text == "/maintenance":
         cur = get_setting("maintenance_mode", "0", kind=str) == "1"
         set_setting("maintenance_mode", "0" if cur else "1")
-        await send(cid, f"✅ የጥገና ሁኔታ: {'ጠፍቷል' if cur else 'ተብርቷል'}"); return
+        await send(cid, f"✅ {'ጠፍቷል' if cur else 'ተብርቷል'}"); return
 
     await send(cid, "ያልታወቀ ትዕዛዝ። /admin ይላኩ")
 
@@ -990,7 +995,7 @@ async def handle_photo_proof(uid, cid, caption, photo_id):
     ok, res = submit_task(uid, tid, proof_text=caption[:500], proof_image=photo_id)
     if not ok:
         await send(cid, f"❌ {res}"); return
-    await send(cid, f"✅ <b>ማስረጃ ተልኳል!</b>\n\nታስክ: {html.escape(t['title'])}\nሽልማት: {t['reward']:.2f} ETB\n\nAdmin ከገመገመ በኋላ ይነገርዎታል።")
+    await send(cid, f"✅ <b>ማስረጃ ተልኳል!</b>\n\nታስክ: {html.escape(t['title'])}\nሽልማት: {t['reward']:.2f} ETB")
     await send_submission_admin(res["submission_id"])
 
 async def edit_cb(q, text, kb=None):
@@ -1006,6 +1011,114 @@ async def handle_callback(q):
     aid = int(q["from"]["id"])
     if not is_admin(aid): await answer_cb(q["id"], "ፍቃድ የለህም", True); return
 
+    # ═══ ADMIN PANEL BUTTONS ═══
+    if data == "adm_refresh" or data == "adm_stats":
+        await answer_cb(q["id"], "🔄 Refresh")
+        try: await tg("deleteMessage", {"chat_id": q["message"]["chat"]["id"], "message_id": q["message"]["message_id"]})
+        except: pass
+        await admin_dash(aid); return
+
+    if data == "adm_wd":
+        await answer_cb(q["id"], "💸 በመጫን ላይ...")
+        conn = db()
+        try:
+            wds = conn.execute("SELECT id FROM withdrawals WHERE status='pending' ORDER BY id ASC").fetchall()
+        finally: conn.close()
+        if not wds:
+            await send(aid, "✅ <b>በመጠባበቅ ላይ ያለ የለም</b>"); return
+        await send(aid, f"💸 <b>{len(wds)} ዊዝድሮዎች</b> — በራሳቸው ይመጣሉ")
+        for w in wds:
+            await send_withdrawal_admin(w["id"])
+            await asyncio.sleep(0.4)
+        return
+
+    if data == "adm_tasks":
+        await answer_cb(q["id"], "📋 በመጫን ላይ...")
+        conn = db()
+        try:
+            subs = conn.execute("SELECT id FROM task_submissions WHERE status='pending' ORDER BY id ASC").fetchall()
+        finally: conn.close()
+        if not subs:
+            await send(aid, "✅ <b>በመጠባበቅ ላይ ያለ የለም</b>"); return
+        await send(aid, f"📋 <b>{len(subs)} የታስክ ማስረጃዎች</b> — በራሳቸው ይመጣሉ")
+        for s in subs:
+            await send_submission_admin(s["id"])
+            await asyncio.sleep(0.4)
+        return
+
+    if data == "adm_users":
+        await answer_cb(q["id"], "👥 በመጫን ላይ...")
+        conn = db()
+        try:
+            us = conn.execute(
+                "SELECT user_id,username,first_name,balance,verified,banned,risk_score FROM users ORDER BY updated_at DESC LIMIT 30"
+            ).fetchall()
+            total = conn.execute("SELECT COUNT(*) c FROM users").fetchone()["c"]
+        finally: conn.close()
+        lines = [f"👥 <b>ተጠቃሚዎች</b> ({total})\n"]
+        for u in us:
+            nm = html.escape(((u["first_name"] or "") + " " + (u["username"] or "")).strip() or "—")
+            st = "✅" if u["verified"] else "⏳"
+            if u["banned"]: st = "🚫"
+            elif (u["risk_score"] or 0) >= 30: st = "⚠️"
+            lines.append(f"{st} {nm}\n<code>{u['user_id']}</code> • {float(u['balance'] or 0):.2f}")
+        kb = {"inline_keyboard": [[{"text": "⬅️ ተመለስ", "callback_data": "adm_stats"}]]}
+        await send(aid, "\n".join(lines), kb); return
+
+    if data == "adm_channels":
+        await answer_cb(q["id"], "📢 በመጫን ላይ...")
+        ch = get_channels(active_only=False)
+        lines = ["📢 <b>ቻናሎች</b>\n"]
+        for c in ch:
+            st = "✅" if c["active"] else "❌"
+            lines.append(f"{st} <b>{html.escape(c['name'])}</b>\n{html.escape(c['username'])}")
+        lines.append("\n/addchannel @u | Name | URL\n/removechannel @u\n/togglechannel @u")
+        kb = {"inline_keyboard": [[{"text": "⬅️ ተመለስ", "callback_data": "adm_stats"}]]}
+        await send(aid, "\n".join(lines), kb); return
+
+    if data == "adm_settings":
+        await answer_cb(q["id"], "⚙️ በመጫን ላይ...")
+        ref_rate = get_setting("referral_reward", DEFAULT_REFERRAL, kind=float)
+        day_rate = get_setting("daily_reward", DEFAULT_DAILY, kind=float)
+        min_wd = get_setting("minimum_withdrawal", DEFAULT_MIN_WITHDRAW, kind=float)
+        await send(aid,
+            f"⚙️ <b>ቅንብሮች</b>\n\n"
+            f"👥 ሪፈራል: <b>{ref_rate:.2f} ETB</b>\n"
+            f"🎁 ዴይሊ: <b>{day_rate:.2f} ETB</b>\n"
+            f"💸 ሚኒማም: <b>{min_wd:.2f} ETB</b>\n\n"
+            "<b>ለመቀየር</b>\n"
+            "/setref 5\n/setdaily 1\n/setminwithdraw 50",
+            {"inline_keyboard": [[{"text": "⬅️ ተመለስ", "callback_data": "adm_stats"}]]})
+        return
+
+    if data == "adm_fraud":
+        await answer_cb(q["id"], "🛡 በመጫን ላይ...")
+        conn = db()
+        try:
+            flagged = conn.execute(
+                "SELECT user_id,username,first_name,risk_score,risk_flags,multi_flag FROM users WHERE risk_score>=30 ORDER BY risk_score DESC LIMIT 20"
+            ).fetchall()
+        finally: conn.close()
+        if not flagged:
+            await send(aid, "✅ <b>አደጋ ያለባቸው የሉም</b>"); return
+        lines = [f"🛡 <b>አደጋ ያለባቸው</b> ({len(flagged)})\n"]
+        for u in flagged:
+            nm = html.escape(((u["first_name"] or "") + " " + (u["username"] or "")).strip() or "—")
+            multi = "🚨 " if u["multi_flag"] else ""
+            lines.append(f"⚠️ {multi}<b>{nm}</b>\n<code>{u['user_id']}</code> • Risk: {u['risk_score']}\n{html.escape(u['risk_flags'] or 'none')}\n")
+        lines.append("<i>/checkuser ID ለሙሉ መረጃ</i>")
+        kb = {"inline_keyboard": [[{"text": "⬅️ ተመለስ", "callback_data": "adm_stats"}]]}
+        await send(aid, "\n".join(lines), kb); return
+
+    if data == "adm_maint":
+        cur = get_setting("maintenance_mode", "0", kind=str) == "1"
+        set_setting("maintenance_mode", "0" if cur else "1")
+        new = not cur
+        await answer_cb(q["id"], f"🔧 {'ተብርቷል' if new else 'ጠፍቷል'}")
+        await send(aid, f"🔧 {'🛑 ተብርቷል — Users መጠቀም አይችሉም' if new else '✅ ጠፍቷል — Users መጠቀም ይችላሉ'}")
+        return
+
+    # ═══ WITHDRAWAL REFERRALS ═══
     if data.startswith("wdrefs:"):
         _, wid_s, page_s = data.split(":", 2)
         wid = int(wid_s); page = int(page_s)
@@ -1019,7 +1132,7 @@ async def handle_callback(q):
         per = 40; start = page*per; chunk = refs[start:start+per]
         total_pages = max(1, (len(refs)+per-1)//per)
         if not chunk: await answer_cb(q["id"], "ሪፈራሎች የሉም"); return
-        lines = [f"👥 <b>ሪፈራሎች — ገጽ {page+1}/{total_pages}</b> ({len(refs)} ጠቅላላ)\n"]
+        lines = [f"👥 <b>ሪፈራሎች {page+1}/{total_pages}</b> ({len(refs)})\n"]
         for r in chunk:
             pd = "💰" if r["referral_paid"] else "⏳"
             nm = html.escape(((r["first_name"] or "") + " " + (r["last_name"] or "")).strip() or "—")
@@ -1027,8 +1140,8 @@ async def handle_callback(q):
             dt = datetime.utcfromtimestamp(int(r["created_at"])).strftime("%m-%d %H:%M")
             lines.append(f"{pd} {nm} {un}\n<code>{r['user_id']}</code> • {dt}")
         nav = []
-        if page > 0: nav.append({"text": "⬅️ ቀዳሚ", "callback_data": f"wdrefs:{wid}:{page-1}"})
-        if page+1 < total_pages: nav.append({"text": "ቀጣይ ➡️", "callback_data": f"wdrefs:{wid}:{page+1}"})
+        if page > 0: nav.append({"text": "⬅️", "callback_data": f"wdrefs:{wid}:{page-1}"})
+        if page+1 < total_pages: nav.append({"text": "➡️", "callback_data": f"wdrefs:{wid}:{page+1}"})
         kb = {"inline_keyboard": [nav]} if nav else None
         await send(aid, "\n".join(lines), kb)
         await answer_cb(q["id"], f"ገጽ {page+1}"); return
@@ -1049,14 +1162,14 @@ async def handle_callback(q):
             if not ok: await answer_cb(q["id"], str(w), True); return
             await answer_cb(q["id"], "✅ ጸድቋል")
             await edit_cb(q, f"✅ <b>ዊዝድሮ #{wid}</b> — ጸድቋል")
-            try: await send(int(w["user_id"]), f"✅ <b>ዊዝድሮ ጸድቋል</b>\n\n{w['amount']:.2f} ETB\n{html.escape(w['wallet_type'])}: <code>{html.escape(w['wallet_number'])}</code>")
+            try: await send(int(w["user_id"]), f"✅ <b>ዊዝድሮ ጸድቋል</b>\n\n{w['amount']:.2f} ETB")
             except: pass
         elif action == "wdno":
-            ok, w = reject_withdrawal(wid, aid, "Rejected by admin")
+            ok, w = reject_withdrawal(wid, aid, "Rejected")
             if not ok: await answer_cb(q["id"], str(w), True); return
-            await answer_cb(q["id"], "❌ ውድቅ ሆኗል")
+            await answer_cb(q["id"], "❌ ውድቅ")
             await edit_cb(q, f"❌ <b>ዊዝድሮ #{wid}</b> — ውድቅ ሆኖ ተመልሷል")
-            try: await send(int(w["user_id"]), f"❌ <b>ዊዝድሮ ውድቅ ሆኗል</b>\nየተመለሰ: {w['amount']:.2f} ETB")
+            try: await send(int(w["user_id"]), f"❌ <b>ዊዝድሮ ውድቅ</b>\nተመለሰ: {w['amount']:.2f} ETB")
             except: pass
         else:
             conn = db()
@@ -1066,7 +1179,7 @@ async def handle_callback(q):
                     conn.execute("UPDATE users SET banned=1, ban_reason='Withdrawal fraud', updated_at=? WHERE user_id=?", (int(time.time()), w["user_id"])); conn.commit()
             finally: conn.close()
             await answer_cb(q["id"], "🚫 ተከልክሏል")
-            await edit_cb(q, f"🚫 <b>ዊዝድሮ #{wid}</b> — ተጠቃሚ ተከልክሏል")
+            await edit_cb(q, f"🚫 <b>ዊዝድሮ #{wid}</b> — ተከልክሏል")
         return
 
     if data.startswith(("tskok:","tskno:")):
@@ -1170,7 +1283,6 @@ async def api_channels(request: Request):
 
 @app.get("/api/channel-status")
 async def api_channel_status(request: Request):
-    """Fast parallel check of per-channel joined status."""
     u, uid, err = await require_user(request)
     if err: return err
     all_joined, results = await check_all_channels_parallel(uid)
@@ -1209,10 +1321,10 @@ async def api_verify(request: Request):
     if not was:
         reward, block = pay_referral_if_eligible(uid)
         if block and block.get("multi"):
-            try: await send_admin(f"🚨 <b>ማስጠንቀቂያ — Multi-Account</b>\n\nተጠቃሚ: <code>{uid}</code>\nReferrer: <code>{block['referrer']}</code>")
+            try: await send_admin(f"🚨 <b>Multi-Account</b>\n\nUser: <code>{uid}</code>\nRef: <code>{block['referrer']}</code>")
             except: pass
         if reward:
-            try: await send(int(get_user(uid)["referred_by"]), f"👥 <b>የሪፈራል ሽልማት</b>\n\n+{reward:.2f} ETB ተከፍሏል!")
+            try: await send(int(get_user(uid)["referred_by"]), f"👥 <b>+{reward:.2f} ETB</b> — ሪፈራል!")
             except: pass
     return {"ok":True,"verified":True,"channels":results}
 
@@ -1309,7 +1421,7 @@ async def on_startup():
         r = await tg("setWebhook", p)
         print("setWebhook:", r)
 
-# ═══ MINI APP ═══
+# ═══ MINI APP (unchanged from previous) ═══
 MINI_APP_HTML = r"""<!doctype html>
 <html lang="en">
 <head>
@@ -1404,8 +1516,6 @@ body.app-mode .nav{display:grid}
 .captcha-input:focus{border-color:var(--blue)}
 .captcha-input.err{border-color:var(--red);animation:shake .4s}
 @keyframes shake{0%,100%{transform:translateX(0)}25%{transform:translateX(-8px)}75%{transform:translateX(8px)}}
-
-/* Channel items with per-channel status */
 .channels-card{background:linear-gradient(180deg,var(--panel),var(--panel2));border:1px solid var(--line);border-radius:20px;padding:6px;margin-top:16px;text-align:left}
 .channel-item{display:flex;align-items:center;gap:12px;padding:14px;border-radius:14px;margin-bottom:4px;text-decoration:none;color:inherit;transition:background .2s}
 .channel-item:active{background:rgba(46,168,255,.08)}
@@ -1417,7 +1527,6 @@ body.app-mode .nav{display:grid}
 .channel-item .go{margin-left:auto;font-size:12px;font-weight:700;white-space:nowrap}
 .channel-item:not(.joined) .go{color:var(--blue)}
 .channel-item.joined .go{color:var(--green)}
-
 .modal-bg{position:fixed;inset:0;z-index:40;background:rgba(3,8,18,.72);backdrop-filter:blur(6px);display:flex;align-items:flex-end;justify-content:center}
 .modal{width:100%;max-width:640px;max-height:88vh;overflow-y:auto;background:linear-gradient(180deg,#0d1c38,#0a1528);border-radius:24px 24px 0 0;border:1px solid var(--line);border-bottom:0;padding:20px 18px calc(24px + env(safe-area-inset-bottom));animation:slideUp .28s}
 @keyframes slideUp{from{transform:translateY(30px);opacity:.5}to{transform:none;opacity:1}}
@@ -1457,9 +1566,7 @@ body.app-mode .nav{display:grid}
     <div class="gate-sub" id="channelStatus">Checking…</div>
     <div class="channels-card" id="channelsList"></div>
     <button class="btn" id="verifyBtn" style="margin-top:16px" disabled>🔄 Verify Membership</button>
-    <div style="text-align:center;color:var(--muted);font-size:11px;margin-top:12px">
-      Tap each channel to join, then come back. Status refreshes automatically.
-    </div>
+    <div style="text-align:center;color:var(--muted);font-size:11px;margin-top:12px">Tap each channel to join, then come back.</div>
   </div>
 </div>
 
@@ -1637,7 +1744,7 @@ async function loadMe(){
   if (!r.ok) {
     if (r.status === 401) { $('#loading').innerHTML='<div class="center"><div>Open from Telegram.</div></div>'; return false; }
     if (r.status === 403) { $('#loading').innerHTML='<div class="center"><div style="color:var(--red)">🚫 Restricted.</div></div>'; return false; }
-    if (r.status === 503) { $('#loading').innerHTML='<div class="center"><div>🛠 Maintenance mode.</div></div>'; return false; }
+    if (r.status === 503) { $('#loading').innerHTML='<div class="center"><div>🛠 Maintenance.</div></div>'; return false; }
     return false;
   }
   STATE.me = r.data; return true;
@@ -1650,14 +1757,13 @@ async function startCaptcha(){
   else { q.textContent = 'Error'; }
 }
 
-/* ─── CHANNELS with per-channel status & auto-refresh ─── */
 async function loadChannelStatus(showSpinner){
   if (showSpinner) {
-    $('#channelsList').innerHTML = '<div style="text-align:center;padding:24px;color:var(--muted);font-size:13px"><div class="spinner" style="width:28px;height:28px;margin-bottom:8px"></div>Checking channels…</div>';
+    $('#channelsList').innerHTML = '<div style="text-align:center;padding:24px;color:var(--muted);font-size:13px"><div class="spinner" style="width:28px;height:28px;margin-bottom:8px"></div>Checking…</div>';
   }
   const r = await api('/api/channel-status');
   if (!r.ok) {
-    $('#channelsList').innerHTML = '<div style="text-align:center;padding:20px;color:var(--red);font-size:13px">Failed to check channels</div>';
+    $('#channelsList').innerHTML = '<div style="text-align:center;padding:20px;color:var(--red);font-size:13px">Failed</div>';
     return;
   }
   const chans = r.data.channels || [];
@@ -1665,20 +1771,18 @@ async function loadChannelStatus(showSpinner){
   const total = chans.length;
   const remaining = total - joinedCount;
 
-  // Update header text
   if (r.data.all_joined) {
-    $('#channelStatus').innerHTML = '<span style="color:var(--green)">✅ All channels verified!</span>';
+    $('#channelStatus').innerHTML = '<span style="color:var(--green)">✅ All verified!</span>';
     $('#verifyBtn').disabled = false;
-    $('#verifyBtn').textContent = '✅ Continue to App';
+    $('#verifyBtn').textContent = '✅ Continue';
   } else {
-    $('#channelStatus').innerHTML = `<span style="color:var(--gold)">${remaining} channel${remaining>1?'s':''} still needed</span> · ${joinedCount}/${total} joined`;
+    $('#channelStatus').innerHTML = `<span style="color:var(--gold)">${remaining} ቻናል ይቀራል</span> · ${joinedCount}/${total}`;
     $('#verifyBtn').disabled = false;
     $('#verifyBtn').textContent = '🔄 Verify Membership';
   }
 
-  // Render each channel
   $('#channelsList').innerHTML = chans.map(c => `
-    <a class="channel-item ${c.joined ? 'joined' : ''}" href="${esc(c.url)}" target="_blank" rel="noopener" data-user="${esc(c.username)}">
+    <a class="channel-item ${c.joined ? 'joined' : ''}" href="${esc(c.url)}" target="_blank" rel="noopener">
       <div class="ico">${c.joined ? '✅' : '📢'}</div>
       <div><div class="nm">${esc(c.name)}</div><div class="un">${esc(c.username)}</div></div>
       <div class="go">${c.joined ? '✓ Joined' : 'Join →'}</div>
@@ -1687,22 +1791,16 @@ async function loadChannelStatus(showSpinner){
   STATE.channelsChecked = true;
 }
 
-/* Re-check when user returns from Telegram (after joining a channel) */
 document.addEventListener('visibilitychange', () => {
-  if (document.visibilityState === 'visible' && !STATE.channelsChecked) {
-    // Only auto-refresh if we're on channels gate
-    if ($('#gate-channels').classList.contains('active')) {
-      loadChannelStatus(false);
-    }
+  if (document.visibilityState === 'visible' && $('#gate-channels').classList.contains('active')) {
+    loadChannelStatus(false);
   }
 });
-// Also refresh when window gains focus
 window.addEventListener('focus', () => {
   if ($('#gate-channels').classList.contains('active')) {
     loadChannelStatus(false);
   }
 });
-// Telegram WebApp: also listen for "activated" event
 if (tg && tg.onEvent) {
   tg.onEvent('activated', () => {
     if ($('#gate-channels').classList.contains('active')) {
@@ -1722,9 +1820,8 @@ async function loadTasks(){
         <div style="font-weight:800;font-size:20px;margin-bottom:6px">Tasks Coming Soon</div>
         <div style="color:var(--muted);font-size:13px;line-height:1.6;margin-bottom:18px">
           Get ready! New paid tasks will be available here very soon.
-          Complete simple activities and earn real rewards.
         </div>
-        <div style="text-align:left;background:rgba(0,0,0,.28);border:1px solid var(--line);border-radius:14px;padding:14px;margin-bottom:14px">
+        <div style="text-align:left;background:rgba(0,0,0,.28);border:1px solid var(--line);border-radius:14px;padding:14px">
           <div style="font-size:12px;font-weight:700;color:var(--muted);letter-spacing:1px;margin-bottom:8px">WHAT TO EXPECT</div>
           <div style="font-size:13px;line-height:1.9">
             🎯 Join Telegram channels<br>
@@ -1734,9 +1831,6 @@ async function loadTasks(){
             🔗 Website visits<br>
             📸 Screenshot proofs
           </div>
-        </div>
-        <div style="color:var(--muted);font-size:12px">
-          💡 Stay tuned — announcements coming soon!
         </div>
       </div>`;
     return;
@@ -1752,7 +1846,7 @@ async function loadTasks(){
       </div>
       ${st ? `<div>${st}</div>` : ''}
       <div class="btn-row">
-        ${t.url ? `<a class="btn dark" href="${esc(t.url)}" target="_blank" style="text-decoration:none">Open Task</a>` : ''}
+        ${t.url ? `<a class="btn dark" href="${esc(t.url)}" target="_blank" style="text-decoration:none">Open</a>` : ''}
         <button class="btn" data-task="${t.id}" ${dis}>Submit Proof</button>
       </div></div>`;
   }).join('');
@@ -1794,20 +1888,20 @@ function openSubmit(taskId){
   const t = STATE.tasks.find(x => x.id === taskId); if (!t) return;
   const botUser = STATE.me.settings.bot_username;
   const code = `#T${taskId}`;
-  openModal(`<div class="mh"><h3>Submit Task Proof</h3><button class="close" data-close>✕</button></div>
+  openModal(`<div class="mh"><h3>Submit Proof</h3><button class="close" data-close>✕</button></div>
     <div class="muted">${esc(t.title)} • +${fmt(t.reward)} ETB</div>
     <div class="card" style="background:rgba(46,168,255,.08);border-color:rgba(46,168,255,.3)">
-      <div style="font-size:13px;font-weight:700;margin-bottom:8px">📸 How to submit</div>
+      <div style="font-size:13px;font-weight:700;margin-bottom:8px">📸 እንዴት እንደሚላክ</div>
       <ol style="margin:0;padding-left:20px;font-size:13px;line-height:1.7;color:var(--muted)">
-        <li>Complete the task</li>
-        <li>Take a <b style="color:var(--text)">screenshot</b> as proof</li>
-        <li>Open <b style="color:var(--blue)">@${esc(botUser)}</b> on Telegram</li>
-        <li>Send the screenshot with caption:</li>
+        <li>ታስኩን ያጠናቅቁ</li>
+        <li><b style="color:var(--text)">Screenshot</b> ያንሱ</li>
+        <li><b style="color:var(--blue)">@${esc(botUser)}</b> ይክፈቱ</li>
+        <li>Screenshot ከዚህ ኮድ ጋር ይላኩ:</li>
       </ol>
       <div style="text-align:center;margin:14px 0 6px">
         <div style="display:inline-block;padding:10px 20px;background:rgba(0,0,0,.4);border:2px dashed rgba(46,168,255,.5);border-radius:12px;font-size:20px;font-weight:900;letter-spacing:2px;color:var(--blue)">${code}</div>
       </div>
-      <div style="text-align:center;color:var(--muted);font-size:11px;margin-top:8px">Admin will review and credit your reward</div>
+      <div style="text-align:center;color:var(--muted);font-size:11px;margin-top:8px">Admin ካየ በኋላ ብር ይገባል</div>
     </div>
     <div class="btn-row">
       <button class="btn dark" data-close>Close</button>
@@ -1818,16 +1912,16 @@ function openSubmit(taskId){
 function openInvite(){
   const m = STATE.me;
   openModal(`<div class="mh"><h3>Invite Friends</h3><button class="close" data-close>✕</button></div>
-    <div class="muted">Earn <b style="color:var(--gold)">${fmt(m.settings.referral_reward)} ETB</b> per verified referral.</div>
-    <div class="warn">⚠️ Multi-account usage = <b>withdrawal rejected without payment</b>.</div>
+    <div class="muted">Earn <b style="color:var(--gold)">${fmt(m.settings.referral_reward)} ETB</b> per referral.</div>
+    <div class="warn">⚠️ Multi-account = <b>rejection</b>.</div>
     <div class="card hero" style="text-align:center">
       <div class="label">Your Referral Link</div>
       <div style="word-break:break-all;font-size:13px;margin:8px 0;color:var(--blue)" id="refLink">https://t.me/${esc(m.settings.bot_username)}?start=ref_${m.user_id}</div>
-      <button class="btn" id="copyRef">📋 Copy Link</button>
+      <button class="btn" id="copyRef">📋 Copy</button>
     </div>
     <div class="card">
-      <div style="display:flex;justify-content:space-between;padding:8px 0;border-bottom:1px solid var(--line)"><span style="color:var(--muted)">Verified referrals</span><b style="color:var(--green);font-size:18px">${m.referral_count}</b></div>
-      <div style="display:flex;justify-content:space-between;padding:8px 0"><span style="color:var(--muted)">Referral earnings</span><b style="color:var(--gold)">${fmt(m.referral_earnings)} ETB</b></div>
+      <div style="display:flex;justify-content:space-between;padding:8px 0;border-bottom:1px solid var(--line)"><span style="color:var(--muted)">Verified</span><b style="color:var(--green);font-size:18px">${m.referral_count}</b></div>
+      <div style="display:flex;justify-content:space-between;padding:8px 0"><span style="color:var(--muted)">Earnings</span><b style="color:var(--gold)">${fmt(m.referral_earnings)} ETB</b></div>
     </div>`);
   $('#copyRef').addEventListener('click', async () => {
     const link = $('#refLink').textContent;
@@ -1839,14 +1933,13 @@ function openInvite(){
 function openWallet(){
   const m = STATE.me;
   openModal(`<div class="mh"><h3>Wallet</h3><button class="close" data-close>✕</button></div>
-    <div class="muted">Choose method and enter your number.</div>
     <div class="chips">
       <button class="chip ${m.wallet_type==='CBE'?'active':''}" data-w="cbe">🏦 CBE</button>
       <button class="chip ${m.wallet_type==='Telebirr'?'active':''}" data-w="telebirr">📱 Telebirr</button>
     </div>
     <label class="label">Wallet Number</label>
-    <input class="input" id="wnum" placeholder="${m.wallet_number || 'Enter number'}" value="${m.wallet_number || ''}">
-    <div style="color:var(--muted);font-size:11px;margin-top:6px">CBE: 13 digits starting 1000 · Telebirr: 10 digits starting 09/07</div>
+    <input class="input" id="wnum" placeholder="${m.wallet_number || 'Enter'}" value="${m.wallet_number || ''}">
+    <div style="color:var(--muted);font-size:11px;margin-top:6px">CBE: 13 digits · Telebirr: 10 digits</div>
     <div class="btn-row"><button class="btn dark" data-close>Cancel</button><button class="btn" id="saveWallet">Save</button></div>`);
   let wt = m.wallet_type ? m.wallet_type.toLowerCase() : 'cbe';
   $$('.chip[data-w]').forEach(c => c.addEventListener('click', () => {
@@ -1863,36 +1956,25 @@ function openWallet(){
 function openWithdraw(){
   const m = STATE.me;
   if (!m.wallet_type || !m.wallet_number) { toast('Save wallet first'); openWallet(); return; }
-  if (!m.settings.payment_day) {
-    toast('🛑 Sunday — no withdrawals. Try Monday.');
-    return;
-  }
-  openModal(`<div class="mh"><h3>Request Payout</h3><button class="close" data-close>✕</button></div>
-    <div class="muted">Available: <b style="color:var(--gold)">${fmt(m.balance)} ETB</b> · Min: ${fmt(m.settings.minimum_withdrawal)} ETB</div>
-    <div class="warn">⚠️ Multi-account usage = <b>rejection without payment</b>.<br>Admin reviews before paying.</div>
+  if (!m.settings.payment_day) { toast('🛑 Sunday — no'); return; }
+  openModal(`<div class="mh"><h3>Payout</h3><button class="close" data-close>✕</button></div>
+    <div class="muted">Available: <b style="color:var(--gold)">${fmt(m.balance)}</b> · Min: ${fmt(m.settings.minimum_withdrawal)}</div>
+    <div class="warn">⚠️ Multi-account = <b>rejection</b>.</div>
     <label class="label">Amount (ETB)</label>
     <input class="input" id="wamount" type="number" step="0.01" value="${Math.max(m.balance, m.settings.minimum_withdrawal).toFixed(2)}">
-    <div class="card" style="margin-top:12px">
-      <div style="display:flex;justify-content:space-between"><span style="color:var(--muted)">Method</span><b>${esc(m.wallet_type)}</b></div>
-      <div style="display:flex;justify-content:space-between;margin-top:6px"><span style="color:var(--muted)">Wallet</span><b>${esc(m.wallet_number)}</b></div>
-    </div>
     <div class="btn-row"><button class="btn dark" data-close>Cancel</button><button class="btn gold" id="doWithdraw">🚀 Request</button></div>`);
   $('#doWithdraw').addEventListener('click', async () => {
     const amount = parseFloat($('#wamount').value || 0);
     const r = await api('/api/withdraw', { method:'POST', body:{ amount } });
     if (r.ok) { toast('⏳ Requested'); closeModal(); await refresh(); }
-    else {
-      const err = r.data.error || 'Failed';
-      if (err === 'sunday') toast('🛑 Sunday — no withdrawals');
-      else toast(err);
-    }
+    else { const err = r.data.error || 'Failed'; toast(err === 'sunday' ? '🛑 Sunday' : err); }
   });
 }
 
 function openServices(){
   const items = STATE.me?.services || [];
-  openModal(`<div class="mh"><h3>Services & Support</h3><button class="close" data-close>✕</button></div>
-    <div class="muted">Contact <b>@AmanM_12</b> for any service.</div>
+  openModal(`<div class="mh"><h3>Services</h3><button class="close" data-close>✕</button></div>
+    <div class="muted">Contact <b>@AmanM_12</b></div>
     ${items.map(s => `<a class="row" href="https://t.me/AmanM_12" target="_blank" style="text-decoration:none;color:inherit;margin-bottom:8px">
       <div class="ico">${s.icon}</div><div class="body"><div class="title">${esc(s.title)}</div><div class="desc">${esc(s.desc)}</div></div></a>`).join('')}`);
 }
@@ -1919,42 +2001,32 @@ async function verifyCaptcha(){
     if (r.data.token && r.data.question) {
       STATE.captchaToken = r.data.token;
       $('#captchaQ').textContent = r.data.question;
-    } else {
-      await startCaptcha();
-    }
+    } else { await startCaptcha(); }
     $('#captchaA').value = '';
-    const inp = $('#captchaA');
-    inp.classList.add('err');
-    setTimeout(() => inp.classList.remove('err'), 400);
-    toast('❌ Wrong answer — try again');
+    $('#captchaA').classList.add('err');
+    setTimeout(() => $('#captchaA').classList.remove('err'), 400);
+    toast('❌ Wrong');
   }
   btn.disabled = false; btn.textContent = '✅ Verify Answer';
 }
 
 async function verifyChannels(){
-  const btn = $('#verifyBtn');
-  const origText = btn.textContent;
-  btn.disabled = true; btn.textContent = 'Checking…';
+  const btn = $('#verifyBtn'); btn.disabled = true; btn.textContent = 'Checking…';
   const r = await api('/api/verify', { method:'POST' });
-  if (r.ok && r.data.verified) {
-    toast('✅ All channels verified!');
-    await refresh();
-  } else {
-    // Update per-channel display with fresh data
+  if (r.ok && r.data.verified) { toast('✅ Done'); await refresh(); }
+  else {
     const chans = r.data.channels || [];
     const joined = chans.filter(c => c.joined).length;
-    const total = chans.length;
-    const remaining = total - joined;
-    $('#channelStatus').innerHTML = `<span style="color:var(--gold)">${remaining} channel${remaining>1?'s':''} still needed</span> · ${joined}/${total} joined`;
+    const remaining = chans.length - joined;
+    $('#channelStatus').innerHTML = `<span style="color:var(--gold)">${remaining} ቻናል ይቀራል</span> · ${joined}/${chans.length}`;
     $('#channelsList').innerHTML = chans.map(c => `
       <a class="channel-item ${c.joined ? 'joined' : ''}" href="${esc(c.url)}" target="_blank" rel="noopener">
         <div class="ico">${c.joined ? '✅' : '📢'}</div>
         <div><div class="nm">${esc(c.name)}</div><div class="un">${esc(c.username)}</div></div>
         <div class="go">${c.joined ? '✓ Joined' : 'Join →'}</div>
       </a>`).join('');
-    toast(`⚠️ ${remaining} channel(s) still needed`);
-    btn.disabled = false;
-    btn.textContent = '🔄 Verify Membership';
+    toast(`⚠️ ${remaining} ቻናል ይቀራል`);
+    btn.disabled = false; btn.textContent = '🔄 Verify Membership';
   }
 }
 
@@ -1967,7 +2039,7 @@ $('#dailyBtn')?.addEventListener('click', async () => {
   else if (r.data.error === 'cooldown') {
     const rem = r.data.remaining || 0;
     const h = Math.floor(rem/3600), mn = Math.floor((rem%3600)/60);
-    toast(`⏳ Today already claimed. Next in ${h}h ${mn}m`);
+    toast(`⏳ ${h}h ${mn}m`);
   } else toast(r.data.error || 'Failed');
 });
 $('#inviteBtn')?.addEventListener('click', openInvite);
@@ -1986,7 +2058,7 @@ $('#servicesBtn')?.addEventListener('click', openServices);
     else { await loadTasks(); showApp(); }
   } catch(e) {
     console.error(e);
-    $('#loading').innerHTML = '<div class="center"><div>Failed. Refresh.</div></div>';
+    $('#loading').innerHTML = '<div class="center"><div>Failed.</div></div>';
   }
 })();
 </script>
