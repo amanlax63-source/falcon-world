@@ -1,5 +1,6 @@
 # ═══════════════════════════════════════════════════════════════
 # ⚡ MEGA SPARK — Complete System (English + Amharic welcome)
+# Admin Panel: 6 Buttons · Full access
 # ═══════════════════════════════════════════════════════════════
 import json, hmac, hashlib, time, asyncio, os, re, sqlite3, html, secrets
 from urllib.parse import parse_qsl
@@ -585,7 +586,7 @@ def parse_ref(text):
     return None
 
 # ═══════════════════════════════════════════════════════════════
-# AMHARIC WELCOME (the ONLY Amharic text)
+# AMHARIC WELCOME (the ONLY Amharic)
 # ═══════════════════════════════════════════════════════════════
 WELCOME_MSG = (
     "⚡ <b>ወደ Mega Spark እንኳን በደህና መጡ</b>\n\n"
@@ -705,23 +706,22 @@ async def user_audit(cid, tid):
     await send(cid, text)
 
 # ═══════════════════════════════════════════════════════════════
-# ADMIN PANEL — English + Buttons
+# ADMIN PANEL — 6 BUTTONS
 # ═══════════════════════════════════════════════════════════════
 def admin_kb():
     conn = db()
     try:
         pw = conn.execute("SELECT COUNT(*) c FROM withdrawals WHERE status='pending'").fetchone()["c"]
         pt = conn.execute("SELECT COUNT(*) c FROM task_submissions WHERE status='pending'").fetchone()["c"]
-        fu = conn.execute("SELECT COUNT(*) c FROM users WHERE risk_score>=30 AND banned=0").fetchone()["c"]
+        ta = conn.execute("SELECT COUNT(*) c FROM tasks WHERE active=1").fetchone()["c"]
     finally: conn.close()
     return {"inline_keyboard": [
         [{"text": f"💸 Withdrawals ({pw})", "callback_data": "adm_wd"},
          {"text": f"📋 Task Proofs ({pt})", "callback_data": "adm_tasks"}],
-        [{"text": "👥 Users", "callback_data": "adm_users"},
-         {"text": "📢 Channels", "callback_data": "adm_channels"}],
-        [{"text": "⚙️ Settings", "callback_data": "adm_settings"},
-         {"text": "🛡 Fraud", "callback_data": "adm_fraud"}],
-        [{"text": "🔧 Maintenance", "callback_data": "adm_maint"},
+        [{"text": "📢 Channels", "callback_data": "adm_channels"},
+         {"text": "⚙️ Settings", "callback_data": "adm_settings"}],
+        [{"text": f"➕ Add Task ({ta} active)", "callback_data": "adm_addtask"}],
+        [{"text": "📋 All Tasks", "callback_data": "adm_tasks_list"},
          {"text": "🔄 Refresh", "callback_data": "adm_refresh"}],
     ]}
 
@@ -965,16 +965,18 @@ async def handle_message(msg):
             conn.commit(); tid = cur.lastrowid
         finally: conn.close()
         log_admin(uid, "addtask", tid)
-        await send(cid, f"✅ Task #{tid} created\n\nUsers will send screenshot with caption <code>#T{tid}</code>"); return
+        await send(cid, f"✅ <b>Task #{tid} created</b>\n\nUsers will send screenshot with caption <code>#T{tid}</code>")
+        return
 
     if text.startswith("/deltask"):
         p = text.split()
-        if len(p) != 2 or not p[1].isdigit(): await send(cid, "Usage: /deltask ID"); return
+        if len(p) != 2 or not p[1].isdigit(): await send(cid, "Usage: /deltask TASK_ID"); return
         conn = db()
         try:
             conn.execute("UPDATE tasks SET active=0 WHERE id=?", (int(p[1]),)); conn.commit()
         finally: conn.close()
-        await send(cid, "✅ Task disabled"); return
+        log_admin(uid, "deltask", p[1])
+        await send(cid, f"✅ Task #{p[1]} disabled"); return
 
     if text == "/tasks":
         ts = get_tasks(False)
@@ -983,6 +985,7 @@ async def handle_message(msg):
         for t in ts:
             st = "✅" if t["active"] else "❌"
             lines.append(f"{st} #{t['id']} {html.escape(t['title'])} — {t['reward']:.2f} ETB")
+        lines.append("\n/deltask ID — disable a task")
         await send(cid, "\n".join(lines)); return
 
     if text == "/withdrawals":
@@ -1071,6 +1074,70 @@ async def handle_callback(q):
             await asyncio.sleep(0.4)
         return
 
+    if data == "adm_channels":
+        await answer_cb(q["id"], "Loading channels...")
+        ch = get_channels(active_only=False)
+        lines = ["📢 <b>Required Channels</b>\n"]
+        for c in ch:
+            st = "✅" if c["active"] else "❌"
+            lines.append(f"{st} <b>{html.escape(c['name'])}</b>\n{html.escape(c['username'])}")
+        lines.append("\n<b>Commands:</b>\n/addchannel @user | Name | URL\n/removechannel @user\n/togglechannel @user\n/editchannel @old | @new | Name | URL")
+        kb = {"inline_keyboard": [[{"text": "⬅️ Back", "callback_data": "adm_stats"}]]}
+        await send(aid, "\n".join(lines), kb); return
+
+    if data == "adm_settings":
+        await answer_cb(q["id"], "Loading settings...")
+        ref_rate = get_setting("referral_reward", DEFAULT_REFERRAL, kind=float)
+        day_rate = get_setting("daily_reward", DEFAULT_DAILY, kind=float)
+        min_wd = get_setting("minimum_withdrawal", DEFAULT_MIN_WITHDRAW, kind=float)
+        await send(aid,
+            f"⚙️ <b>System Settings</b>\n\n"
+            f"👥 Referral reward: <b>{ref_rate:.2f} ETB</b>\n"
+            f"🎁 Daily bonus: <b>{day_rate:.2f} ETB</b>\n"
+            f"💸 Min withdrawal: <b>{min_wd:.2f} ETB</b>\n\n"
+            "<b>Commands:</b>\n/setref 5\n/setdaily 1\n/setminwithdraw 50",
+            {"inline_keyboard": [[{"text": "⬅️ Back", "callback_data": "adm_stats"}]]})
+        return
+
+    if data == "adm_addtask":
+        await answer_cb(q["id"], "Add Task")
+        await send(aid,
+            "➕ <b>Add New Task</b>\n\n"
+            "<b>Format:</b>\n"
+            "<code>/addtask Title | Description | Reward | URL</code>\n\n"
+            "<b>Example:</b>\n"
+            "<code>/addtask Join Channel | Join our new channel | 2 | https://t.me/example</code>\n\n"
+            "✅ The task will appear in the app immediately.\n"
+            "👥 Users will send screenshot with caption <code>#T</code> + task ID.\n\n"
+            "<b>To remove a task:</b>\n<code>/deltask TASK_ID</code>",
+            {"inline_keyboard": [
+                [{"text": "📋 All Tasks", "callback_data": "adm_tasks_list"}],
+                [{"text": "⬅️ Back", "callback_data": "adm_stats"}],
+            ]})
+        await send(aid, "<code>/addtask Task Title | Task description | 2 | https://t.me/example</code>")
+        return
+
+    if data == "adm_tasks_list":
+        await answer_cb(q["id"], "Loading tasks...")
+        ts = get_tasks(active_only=False)
+        kb = {"inline_keyboard": [
+            [{"text": "➕ Add Task", "callback_data": "adm_addtask"}],
+            [{"text": "⬅️ Back", "callback_data": "adm_stats"}],
+        ]}
+        if not ts:
+            await send(aid, "📋 <b>No tasks yet</b>\n\nUse <code>/addtask</code> to create one.", kb)
+            return
+        lines = [f"📋 <b>All Tasks</b> ({len(ts)})\n"]
+        for t in ts:
+            st = "✅" if t["active"] else "❌"
+            lines.append(
+                f"{st} <b>#{t['id']}</b> {html.escape(t['title'])}\n"
+                f"💰 {t['reward']:.2f} ETB\n"
+                f"🔗 {html.escape(t['url'] or 'no url')}"
+            )
+        lines.append("\n<b>Commands:</b>\n<code>/deltask ID</code> — disable\n<code>/addtask Title | Desc | Reward | URL</code>")
+        await send(aid, "\n".join(lines), kb); return
+
     if data == "adm_users":
         await answer_cb(q["id"], "Loading users...")
         conn = db()
@@ -1090,32 +1157,6 @@ async def handle_callback(q):
         kb = {"inline_keyboard": [[{"text": "⬅️ Back", "callback_data": "adm_stats"}]]}
         await send(aid, "\n".join(lines), kb); return
 
-    if data == "adm_channels":
-        await answer_cb(q["id"], "Loading channels...")
-        ch = get_channels(active_only=False)
-        lines = ["📢 <b>Required Channels</b>\n"]
-        for c in ch:
-            st = "✅" if c["active"] else "❌"
-            lines.append(f"{st} <b>{html.escape(c['name'])}</b>\n{html.escape(c['username'])}")
-        lines.append("\n<b>Commands</b>\n/addchannel @user | Name | URL\n/removechannel @user\n/togglechannel @user\n/editchannel @old | @new | Name | URL")
-        kb = {"inline_keyboard": [[{"text": "⬅️ Back", "callback_data": "adm_stats"}]]}
-        await send(aid, "\n".join(lines), kb); return
-
-    if data == "adm_settings":
-        await answer_cb(q["id"], "Loading settings...")
-        ref_rate = get_setting("referral_reward", DEFAULT_REFERRAL, kind=float)
-        day_rate = get_setting("daily_reward", DEFAULT_DAILY, kind=float)
-        min_wd = get_setting("minimum_withdrawal", DEFAULT_MIN_WITHDRAW, kind=float)
-        await send(aid,
-            f"⚙️ <b>System Settings</b>\n\n"
-            f"👥 Referral reward: <b>{ref_rate:.2f} ETB</b>\n"
-            f"🎁 Daily bonus: <b>{day_rate:.2f} ETB</b>\n"
-            f"💸 Min withdrawal: <b>{min_wd:.2f} ETB</b>\n\n"
-            "<b>Commands to change:</b>\n"
-            "/setref 5\n/setdaily 1\n/setminwithdraw 50",
-            {"inline_keyboard": [[{"text": "⬅️ Back", "callback_data": "adm_stats"}]]})
-        return
-
     if data == "adm_fraud":
         await answer_cb(q["id"], "Loading fraud list...")
         conn = db()
@@ -1124,15 +1165,15 @@ async def handle_callback(q):
                 "SELECT user_id,username,first_name,risk_score,risk_flags,multi_flag FROM users WHERE risk_score>=30 ORDER BY risk_score DESC LIMIT 20"
             ).fetchall()
         finally: conn.close()
+        kb = {"inline_keyboard": [[{"text": "⬅️ Back", "callback_data": "adm_stats"}]]}
         if not flagged:
-            await send(aid, "✅ <b>No risky users</b>"); return
+            await send(aid, "✅ <b>No risky users</b>", kb); return
         lines = [f"🛡 <b>Flagged Users</b> ({len(flagged)})\n"]
         for u in flagged:
             nm = html.escape(((u["first_name"] or "") + " " + (u["username"] or "")).strip() or "—")
             multi = "🚨 " if u["multi_flag"] else ""
             lines.append(f"⚠️ {multi}<b>{nm}</b>\n<code>{u['user_id']}</code> • Risk: {u['risk_score']}\n{html.escape(u['risk_flags'] or 'none')}\n")
         lines.append("<i>/checkuser ID for details</i>")
-        kb = {"inline_keyboard": [[{"text": "⬅️ Back", "callback_data": "adm_stats"}]]}
         await send(aid, "\n".join(lines), kb); return
 
     if data == "adm_maint":
@@ -1140,7 +1181,8 @@ async def handle_callback(q):
         set_setting("maintenance_mode", "0" if cur else "1")
         new = not cur
         await answer_cb(q["id"], f"{'ON' if new else 'OFF'}")
-        await send(aid, f"🔧 Maintenance mode: {'🛑 ON — Users cannot access' if new else '✅ OFF — Users can access'}")
+        kb = {"inline_keyboard": [[{"text": "⬅️ Back", "callback_data": "adm_stats"}]]}
+        await send(aid, f"🔧 Maintenance mode: {'🛑 ON' if new else '✅ OFF'}", kb)
         return
 
     # ═══ WITHDRAWAL REFERRALS ═══
@@ -1446,7 +1488,7 @@ async def on_startup():
         r = await tg("setWebhook", p)
         print("setWebhook:", r)
 
-# ═══ MINI APP (same as before, English UI) ═══
+# ═══ MINI APP ═══
 MINI_APP_HTML = r"""<!doctype html>
 <html lang="en">
 <head>
@@ -1996,7 +2038,7 @@ function openWithdraw(){
     const amount = parseFloat($('#wamount').value || 0);
     const r = await api('/api/withdraw', { method:'POST', body:{ amount } });
     if (r.ok) { toast('⏳ Requested'); closeModal(); await refresh(); }
-    else { const err = r.data.error || 'Failed'; toast(err === 'sunday' ? '🛑 Sunday — no withdrawals' : err); }
+    else { const err = r.data.error || 'Failed'; toast(err === 'sunday' ? '🛑 Sunday' : err); }
   });
 }
 
