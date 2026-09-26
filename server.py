@@ -1,5 +1,5 @@
 # ═══════════════════════════════════════════════════════════════
-# ⚡ MEGA SPARK — Complete System (Fixed)
+# ⚡ MEGA SPARK — Complete System v3 (Per-Channel Auto-Check)
 # ═══════════════════════════════════════════════════════════════
 import json, hmac, hashlib, time, asyncio, os, re, sqlite3, html, secrets
 from urllib.parse import parse_qsl
@@ -473,7 +473,7 @@ def reject_task_submission(sid, aid, reason=""):
 async def tg(method, data=None):
     if not BOT_TOKEN: return {"ok": False}
     try:
-        async with httpx.AsyncClient(timeout=25) as c:
+        async with httpx.AsyncClient(timeout=15) as c:
             r = await c.post(f"{TELEGRAM_API}/{method}", json=data or {})
             try: return r.json()
             except: return {"ok": False}
@@ -497,18 +497,32 @@ async def send_admin_photo(photo_id, caption="", kb=None):
 
 async def check_channel_membership(uid, ch):
     r = await tg("getChatMember", {"chat_id": ch, "user_id": uid})
-    if not r.get("ok"): return False
+    if not r.get("ok"):
+        err = r.get("description", "unknown")
+        print(f"[CHANNEL-CHECK] FAILED for {ch}: {err}")
+        return False
     st = r.get("result", {}).get("status")
     if st in {"member","administrator","creator"}: return True
     if st == "restricted" and r.get("result", {}).get("is_member") is True: return True
     return False
 
-async def verify_all_channels(uid):
+async def check_all_channels_parallel(uid):
+    """PARALLEL check — much faster"""
     chans = get_channels(active_only=True)
+    if not chans:
+        return False, []
+    tasks = [check_channel_membership(uid, c["username"]) for c in chans]
+    results = await asyncio.gather(*tasks)
     out = []
-    for c in chans:
-        out.append({"id": c["id"], "username": c["username"], "name": c["name"], "url": c["url"], "joined": await check_channel_membership(uid, c["username"])})
-    return (all(x["joined"] for x in out) and len(out) > 0), out
+    for c, joined in zip(chans, results):
+        out.append({
+            "id": c["id"], "username": c["username"], "name": c["name"], "url": c["url"], "joined": joined
+        })
+    all_joined = all(x["joined"] for x in out) and len(out) > 0
+    return all_joined, out
+
+async def verify_all_channels(uid):
+    return await check_all_channels_parallel(uid)
 
 def make_captcha(uid):
     a = secrets.randbelow(8) + 3
@@ -576,7 +590,6 @@ def parse_ref(text):
     if p.isdigit(): return int(p)
     return None
 
-# ─── Amharic Messages ───
 WELCOME_MSG = (
     "⚡ <b>ወደ Mega Spark እንኳን በደህና መጡ</b>\n\n"
     "💰 ያግኙ እና ተግባሮችን ያጠናቅቁ\n"
@@ -721,28 +734,13 @@ async def admin_dash(cid):
         f"💸 ሚኒማም ዊዝድሮ: <b>{min_wd:.2f} ETB</b>\n"
         f"📅 ዛሬ: {'✅ የክፍያ ቀን' if payment_day else '🛑 እሁድ'}\n\n"
         "<b>📋 Commands</b>\n"
-        "/admin — ዳሽቦርድ\n"
-        "/stats — ስታቲስቲክስ\n"
-        "/checkuser ID — ተጠቃሚ መመልከት\n"
-        "/addbalance ID AMT — ባላንስ መጨመር\n"
-        "/testbalance ID AMT — የቴስት ባላንስ\n"
-        "/ban ID [reason] — መከልከል\n"
-        "/unban ID — መክፈት\n"
-        "/setref AMT — ሪፈራል ዋጋ\n"
-        "/setdaily AMT — ዴይሊ\n"
-        "/setminwithdraw AMT — ሚኒማም\n"
-        "/channels — ቻናሎች\n"
-        "/addchannel @u | Name | URL\n"
-        "/removechannel @u\n"
-        "/togglechannel @u\n"
-        "/editchannel @old | @new | Name | URL\n"
-        "/addtask Title | Desc | Reward | URL\n"
-        "/deltask ID\n"
-        "/tasks — ሁሉም ታስኮች\n"
-        "/withdrawals — ዊዝድሮዎች\n"
-        "/maintenance — የጥገና ሁኔታ")
+        "/admin — ዳሽቦርድ\n/stats — ስታቲስቲክስ\n/checkuser ID\n"
+        "/addbalance ID AMT\n/testbalance ID AMT\n/ban ID [reason]\n/unban ID\n"
+        "/setref AMT\n/setdaily AMT\n/setminwithdraw AMT\n"
+        "/channels\n/addchannel @u | Name | URL\n/removechannel @u\n/togglechannel @u\n/editchannel @old | @new | Name | URL\n"
+        "/addtask Title | Desc | Reward | URL\n/deltask ID\n/tasks\n/withdrawals\n/maintenance")
 
-# ─── Bot Handlers ───
+# ─── Bot handlers ───
 async def handle_message(msg):
     chat = msg.get("chat", {}); user = msg.get("from", {})
     cid = chat.get("id"); uid = user.get("id")
@@ -771,11 +769,8 @@ async def handle_message(msg):
     if text == "/help":
         await send(cid,
             "⚡ <b>Mega Spark እርዳታ</b>\n\n"
-            "1. Menu ቁልፍ ተጭነው ይክፈቱ\n"
-            "2. Captcha ያረጋግጡ\n"
-            "3. ቻናሎቹን ይቀላቀሉ\n"
-            "4. ያግኙ\n"
-            "5. ከ 30 ETB በላይ ሲሆን ያውጡ\n\n"
+            "1. Menu ቁልፍ ተጭነው ይክፈቱ\n2. Captcha ያረጋግጡ\n"
+            "3. ቻናሎቹን ይቀላቀሉ\n4. ያግኙ\n5. ከ 30 ETB በላይ ሲሆን ያውጡ\n\n"
             "⚠️ ብዙ አካውንት = ክፍያ ውድቅ\n\n"
             f"📞 ድጋፍ: {SUPPORT_USERNAME}")
         return
@@ -1109,7 +1104,6 @@ def validate_init_data(d):
         return u
     except: return None
 
-# ✅ FIXED: no Header param, read from request headers manually
 async def require_user(request: Request):
     u = validate_init_data(request.headers.get("X-Telegram-Init-Data",""))
     if not u: return None, None, JSONResponse({"error":"telegram_required"}, status_code=401)
@@ -1174,6 +1168,14 @@ async def api_channels(request: Request):
     if err: return err
     return {"channels":[{"id":c["id"],"username":c["username"],"name":c["name"],"url":c["url"]} for c in get_channels(active_only=True)]}
 
+@app.get("/api/channel-status")
+async def api_channel_status(request: Request):
+    """Fast parallel check of per-channel joined status."""
+    u, uid, err = await require_user(request)
+    if err: return err
+    all_joined, results = await check_all_channels_parallel(uid)
+    return {"channels": results, "all_joined": all_joined}
+
 @app.post("/api/captcha")
 async def api_captcha(request: Request):
     u, uid, err = await require_user(request)
@@ -1196,8 +1198,9 @@ async def api_verify(request: Request):
     if err: return err
     row = get_user(uid)
     if not row["captcha_passed"]: return JSONResponse({"ok":False,"error":"captcha_required"}, status_code=400)
-    all_ok, results = await verify_all_channels(uid)
-    if not all_ok: return {"ok":False,"verified":False,"channels":results}
+    all_ok, results = await check_all_channels_parallel(uid)
+    if not all_ok:
+        return {"ok":False,"verified":False,"channels":results}
     conn = db()
     try:
         was = bool(row["verified"])
@@ -1206,7 +1209,7 @@ async def api_verify(request: Request):
     if not was:
         reward, block = pay_referral_if_eligible(uid)
         if block and block.get("multi"):
-            try: await send_admin(f"🚨 <b>ማስጠንቀቂያ — Multi-Account</b>\n\nተጠቃሚ: <code>{uid}</code>\nReferrer: <code>{block['referrer']}</code>\nምክንያት: {block['reason']}")
+            try: await send_admin(f"🚨 <b>ማስጠንቀቂያ — Multi-Account</b>\n\nተጠቃሚ: <code>{uid}</code>\nReferrer: <code>{block['referrer']}</code>")
             except: pass
         if reward:
             try: await send(int(get_user(uid)["referred_by"]), f"👥 <b>የሪፈራል ሽልማት</b>\n\n+{reward:.2f} ETB ተከፍሏል!")
@@ -1331,9 +1334,9 @@ button{font-family:inherit;cursor:pointer;border:0;outline:0;color:inherit}
 .balance-chip{margin-left:auto;padding:8px 12px;border-radius:999px;background:linear-gradient(135deg,rgba(46,168,255,.16),rgba(124,104,255,.16));border:1px solid var(--line);font-weight:700;font-size:13px;display:flex;align-items:center;gap:6px}
 .balance-chip .amt{color:var(--gold)}
 .wrap{padding:16px 16px 8px;max-width:640px;margin:0 auto}
-.screen{display:none;animation:fade .3s ease}
+.screen{display:none;animation:fade .25s ease}
 .screen.active{display:block}
-@keyframes fade{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
+@keyframes fade{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
 .card{background:linear-gradient(180deg,var(--panel),var(--panel2));border:1px solid var(--line);border-radius:var(--r);padding:16px;margin-bottom:14px}
 .hero{background:radial-gradient(120% 90% at 100% 0%,rgba(46,168,255,.22),transparent 55%),radial-gradient(90% 80% at 0% 100%,rgba(124,104,255,.22),transparent 55%),linear-gradient(180deg,#0b1830,#0a1428);border:1px solid rgba(80,150,255,.22)}
 .hero .label{color:var(--muted);font-size:12px;letter-spacing:.6px;text-transform:uppercase;font-weight:600}
@@ -1401,13 +1404,20 @@ body.app-mode .nav{display:grid}
 .captcha-input:focus{border-color:var(--blue)}
 .captcha-input.err{border-color:var(--red);animation:shake .4s}
 @keyframes shake{0%,100%{transform:translateX(0)}25%{transform:translateX(-8px)}75%{transform:translateX(8px)}}
+
+/* Channel items with per-channel status */
 .channels-card{background:linear-gradient(180deg,var(--panel),var(--panel2));border:1px solid var(--line);border-radius:20px;padding:6px;margin-top:16px;text-align:left}
-.channel-item{display:flex;align-items:center;gap:12px;padding:14px;border-radius:14px;margin-bottom:4px;text-decoration:none;color:inherit}
+.channel-item{display:flex;align-items:center;gap:12px;padding:14px;border-radius:14px;margin-bottom:4px;text-decoration:none;color:inherit;transition:background .2s}
+.channel-item:active{background:rgba(46,168,255,.08)}
 .channel-item:last-child{margin-bottom:0}
-.channel-item .ico{width:42px;height:42px;border-radius:12px;background:linear-gradient(135deg,rgba(46,168,255,.22),rgba(124,104,255,.22));border:1px solid var(--line);display:grid;place-items:center;font-size:20px;flex:0 0 42px}
+.channel-item .ico{width:42px;height:42px;border-radius:12px;border:1px solid var(--line);display:grid;place-items:center;font-size:20px;flex:0 0 42px;background:linear-gradient(135deg,rgba(46,168,255,.22),rgba(124,104,255,.22))}
+.channel-item.joined .ico{background:linear-gradient(135deg,rgba(52,230,164,.22),rgba(0,180,110,.16));border-color:rgba(52,230,164,.4)}
 .channel-item .nm{font-weight:700;font-size:14px}
 .channel-item .un{color:var(--muted);font-size:12px;margin-top:2px}
-.channel-item .go{margin-left:auto;color:var(--blue);font-size:12px;font-weight:700}
+.channel-item .go{margin-left:auto;font-size:12px;font-weight:700;white-space:nowrap}
+.channel-item:not(.joined) .go{color:var(--blue)}
+.channel-item.joined .go{color:var(--green)}
+
 .modal-bg{position:fixed;inset:0;z-index:40;background:rgba(3,8,18,.72);backdrop-filter:blur(6px);display:flex;align-items:flex-end;justify-content:center}
 .modal{width:100%;max-width:640px;max-height:88vh;overflow-y:auto;background:linear-gradient(180deg,#0d1c38,#0a1528);border-radius:24px 24px 0 0;border:1px solid var(--line);border-bottom:0;padding:20px 18px calc(24px + env(safe-area-inset-bottom));animation:slideUp .28s}
 @keyframes slideUp{from{transform:translateY(30px);opacity:.5}to{transform:none;opacity:1}}
@@ -1444,9 +1454,12 @@ body.app-mode .nav{display:grid}
   <div class="gate-inner">
     <div class="gate-logo">📢</div>
     <h1 class="gate-title">Join Required Channels</h1>
-    <div class="gate-sub">Join all channels below, then verify</div>
+    <div class="gate-sub" id="channelStatus">Checking…</div>
     <div class="channels-card" id="channelsList"></div>
-    <button class="btn" id="verifyBtn" style="margin-top:16px">🔄 Verify Membership</button>
+    <button class="btn" id="verifyBtn" style="margin-top:16px" disabled>🔄 Verify Membership</button>
+    <div style="text-align:center;color:var(--muted);font-size:11px;margin-top:12px">
+      Tap each channel to join, then come back. Status refreshes automatically.
+    </div>
   </div>
 </div>
 
@@ -1548,7 +1561,7 @@ let deviceId = localStorage.getItem('ms_fid');
 if (!deviceId) { deviceId = 'd_' + Math.random().toString(36).slice(2) + Date.now(); localStorage.setItem('ms_fid', deviceId); }
 const $ = s => document.querySelector(s);
 const $$ = s => [...document.querySelectorAll(s)];
-let STATE = { me:null, tasks:[], captchaToken:null };
+let STATE = { me:null, tasks:[], captchaToken:null, channelsChecked:false };
 
 async function api(path, opts={}) {
   const r = await fetch(path, {
@@ -1637,15 +1650,65 @@ async function startCaptcha(){
   else { q.textContent = 'Error'; }
 }
 
-async function loadChannels(){
-  const r = await api('/api/channels');
-  if (!r.ok) return;
-  $('#channelsList').innerHTML = (r.data.channels||[]).map(c => `
-    <a class="channel-item" href="${esc(c.url)}" target="_blank" rel="noopener">
-      <div class="ico">📢</div>
+/* ─── CHANNELS with per-channel status & auto-refresh ─── */
+async function loadChannelStatus(showSpinner){
+  if (showSpinner) {
+    $('#channelsList').innerHTML = '<div style="text-align:center;padding:24px;color:var(--muted);font-size:13px"><div class="spinner" style="width:28px;height:28px;margin-bottom:8px"></div>Checking channels…</div>';
+  }
+  const r = await api('/api/channel-status');
+  if (!r.ok) {
+    $('#channelsList').innerHTML = '<div style="text-align:center;padding:20px;color:var(--red);font-size:13px">Failed to check channels</div>';
+    return;
+  }
+  const chans = r.data.channels || [];
+  const joinedCount = chans.filter(c => c.joined).length;
+  const total = chans.length;
+  const remaining = total - joinedCount;
+
+  // Update header text
+  if (r.data.all_joined) {
+    $('#channelStatus').innerHTML = '<span style="color:var(--green)">✅ All channels verified!</span>';
+    $('#verifyBtn').disabled = false;
+    $('#verifyBtn').textContent = '✅ Continue to App';
+  } else {
+    $('#channelStatus').innerHTML = `<span style="color:var(--gold)">${remaining} channel${remaining>1?'s':''} still needed</span> · ${joinedCount}/${total} joined`;
+    $('#verifyBtn').disabled = false;
+    $('#verifyBtn').textContent = '🔄 Verify Membership';
+  }
+
+  // Render each channel
+  $('#channelsList').innerHTML = chans.map(c => `
+    <a class="channel-item ${c.joined ? 'joined' : ''}" href="${esc(c.url)}" target="_blank" rel="noopener" data-user="${esc(c.username)}">
+      <div class="ico">${c.joined ? '✅' : '📢'}</div>
       <div><div class="nm">${esc(c.name)}</div><div class="un">${esc(c.username)}</div></div>
-      <div class="go">Join →</div>
+      <div class="go">${c.joined ? '✓ Joined' : 'Join →'}</div>
     </a>`).join('');
+
+  STATE.channelsChecked = true;
+}
+
+/* Re-check when user returns from Telegram (after joining a channel) */
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible' && !STATE.channelsChecked) {
+    // Only auto-refresh if we're on channels gate
+    if ($('#gate-channels').classList.contains('active')) {
+      loadChannelStatus(false);
+    }
+  }
+});
+// Also refresh when window gains focus
+window.addEventListener('focus', () => {
+  if ($('#gate-channels').classList.contains('active')) {
+    loadChannelStatus(false);
+  }
+});
+// Telegram WebApp: also listen for "activated" event
+if (tg && tg.onEvent) {
+  tg.onEvent('activated', () => {
+    if ($('#gate-channels').classList.contains('active')) {
+      loadChannelStatus(false);
+    }
+  });
 }
 
 async function loadTasks(){
@@ -1838,7 +1901,7 @@ async function refresh(){
   if (!(await loadMe())) return;
   renderApp();
   if (!STATE.me.captcha_passed) { await startCaptcha(); showGate('captcha'); return; }
-  if (!STATE.me.verified) { await loadChannels(); showGate('channels'); return; }
+  if (!STATE.me.verified) { showGate('channels'); await loadChannelStatus(true); return; }
   await loadTasks(); showApp();
 }
 
@@ -1850,8 +1913,8 @@ async function verifyCaptcha(){
   if (r.ok) {
     toast('✅ Verified');
     await loadMe(); renderApp();
-    await loadChannels();
     showGate('channels');
+    await loadChannelStatus(true);
   } else {
     if (r.data.token && r.data.question) {
       STATE.captchaToken = r.data.token;
@@ -1869,14 +1932,30 @@ async function verifyCaptcha(){
 }
 
 async function verifyChannels(){
-  const btn = $('#verifyBtn'); btn.disabled = true; btn.textContent = 'Checking…';
+  const btn = $('#verifyBtn');
+  const origText = btn.textContent;
+  btn.disabled = true; btn.textContent = 'Checking…';
   const r = await api('/api/verify', { method:'POST' });
-  if (r.ok && r.data.verified) { toast('✅ Verified'); await refresh(); }
-  else {
-    const missing = (r.data.channels || []).filter(c => !c.joined).length;
-    toast(`⚠️ ${missing} channel(s) still needed`);
+  if (r.ok && r.data.verified) {
+    toast('✅ All channels verified!');
+    await refresh();
+  } else {
+    // Update per-channel display with fresh data
+    const chans = r.data.channels || [];
+    const joined = chans.filter(c => c.joined).length;
+    const total = chans.length;
+    const remaining = total - joined;
+    $('#channelStatus').innerHTML = `<span style="color:var(--gold)">${remaining} channel${remaining>1?'s':''} still needed</span> · ${joined}/${total} joined`;
+    $('#channelsList').innerHTML = chans.map(c => `
+      <a class="channel-item ${c.joined ? 'joined' : ''}" href="${esc(c.url)}" target="_blank" rel="noopener">
+        <div class="ico">${c.joined ? '✅' : '📢'}</div>
+        <div><div class="nm">${esc(c.name)}</div><div class="un">${esc(c.username)}</div></div>
+        <div class="go">${c.joined ? '✓ Joined' : 'Join →'}</div>
+      </a>`).join('');
+    toast(`⚠️ ${remaining} channel(s) still needed`);
+    btn.disabled = false;
+    btn.textContent = '🔄 Verify Membership';
   }
-  btn.disabled = false; btn.textContent = '🔄 Verify Membership';
 }
 
 $('#captchaBtn')?.addEventListener('click', verifyCaptcha);
@@ -1903,7 +1982,7 @@ $('#servicesBtn')?.addEventListener('click', openServices);
     if (!(await loadMe())) return;
     renderApp();
     if (!STATE.me.captcha_passed) { await startCaptcha(); showGate('captcha'); }
-    else if (!STATE.me.verified) { await loadChannels(); showGate('channels'); }
+    else if (!STATE.me.verified) { showGate('channels'); await loadChannelStatus(true); }
     else { await loadTasks(); showApp(); }
   } catch(e) {
     console.error(e);
