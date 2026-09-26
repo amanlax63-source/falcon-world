@@ -1,12 +1,11 @@
 # ═══════════════════════════════════════════════════════════════
-# ⚡ MEGA SPARK — Complete System
-# Amharic bot messages · English app UI · Dynamic referral
+# ⚡ MEGA SPARK — Complete System (Fixed)
 # ═══════════════════════════════════════════════════════════════
 import json, hmac, hashlib, time, asyncio, os, re, sqlite3, html, secrets
 from urllib.parse import parse_qsl
 from datetime import datetime
 from typing import Optional
-from fastapi import FastAPI, Request, Body, Header
+from fastapi import FastAPI, Request, Body
 from fastapi.responses import HTMLResponse, JSONResponse
 import httpx
 
@@ -42,7 +41,6 @@ SERVICES = [
     ("📱", "Social Promotion", "Social media ማሳደግ"),
 ]
 
-# ═══ DATABASE ═══
 def db():
     conn = sqlite3.connect(DB_PATH, timeout=30, isolation_level=None)
     conn.row_factory = sqlite3.Row
@@ -252,7 +250,6 @@ def get_all_referrals(uid):
     finally: conn.close()
 
 def pay_referral_if_eligible(uid):
-    """Pay referrer with CURRENT price at time of payment."""
     conn = db()
     try:
         conn.execute("BEGIN IMMEDIATE")
@@ -472,7 +469,7 @@ def reject_task_submission(sid, aid, reason=""):
         return True
     finally: conn.close()
 
-# ═══ Telegram ═══
+# ─── Telegram API ───
 async def tg(method, data=None):
     if not BOT_TOKEN: return {"ok": False}
     try:
@@ -579,7 +576,7 @@ def parse_ref(text):
     if p.isdigit(): return int(p)
     return None
 
-# ═══ AMHARIC BOT MESSAGES ═══
+# ─── Amharic Messages ───
 WELCOME_MSG = (
     "⚡ <b>ወደ Mega Spark እንኳን በደህና መጡ</b>\n\n"
     "💰 ያግኙ እና ተግባሮችን ያጠናቅቁ\n"
@@ -745,7 +742,7 @@ async def admin_dash(cid):
         "/withdrawals — ዊዝድሮዎች\n"
         "/maintenance — የጥገና ሁኔታ")
 
-# ═══ BOT HANDLERS ═══
+# ─── Bot Handlers ───
 async def handle_message(msg):
     chat = msg.get("chat", {}); user = msg.get("from", {})
     cid = chat.get("id"); uid = user.get("id")
@@ -783,7 +780,6 @@ async def handle_message(msg):
             f"📞 ድጋፍ: {SUPPORT_USERNAME}")
         return
 
-    # ─── ADMIN COMMANDS ───
     if not is_admin(uid):
         await send(cid, "ጀምር ለማድረግ /start ይላኩ ወይም Menu ቁልፍ ይጫኑ 🚀")
         return
@@ -805,7 +801,7 @@ async def handle_message(msg):
         if amt > 0: credit(tid, amt, "admin", f"Admin {uid}", admin_id=uid)
         else: debit(tid, abs(amt), "admin", f"Admin {uid}", admin_id=uid)
         log_admin(uid, "addbalance", tid, "", amt)
-        await send(cid, f"✅ {amt:+.2f} ETB ለ {tid}") ; return
+        await send(cid, f"✅ {amt:+.2f} ETB ለ {tid}"); return
 
     if text.startswith("/testbalance"):
         p = text.split()
@@ -820,7 +816,7 @@ async def handle_message(msg):
         if amt > 0: credit(tid, amt, "admin", f"TEST balance by {uid}", admin_id=uid)
         elif amt < 0: debit(tid, abs(amt), "admin", f"TEST deduct by {uid}", admin_id=uid)
         log_admin(uid, "testbalance", tid, "", amt)
-        await send(cid, f"🧪 የቴስት ባላንስ {amt:+.2f} ETB ለ {tid}") ; return
+        await send(cid, f"🧪 የቴስት ባላንስ {amt:+.2f} ETB ለ {tid}"); return
 
     if text.startswith("/ban"):
         p = text.split()
@@ -853,7 +849,7 @@ async def handle_message(msg):
         except: await send(cid, "ልክ ያልሆነ ቁጥር"); return
         old = get_setting("referral_reward", DEFAULT_REFERRAL, kind=float)
         set_setting("referral_reward", v); log_admin(uid, "setref", "", old, v)
-        await send(cid, f"✅ ሪፈራል ዋጋ: <b>{old:.2f}</b> → <b>{v:.2f} ETB</b>\n\n<b>ማስታወሻ:</b> አሁን የሚመጡ አዲስ ሪፈራሎች በአዲሱ ዋጋ ይከፈላሉ።"); return
+        await send(cid, f"✅ ሪፈራል ዋጋ: <b>{old:.2f}</b> → <b>{v:.2f} ETB</b>"); return
 
     if text.startswith("/setdaily"):
         p = text.split()
@@ -1113,7 +1109,8 @@ def validate_init_data(d):
         return u
     except: return None
 
-async def require_user(request: Request, x_device_id: str = Header(default="", alias="X-Device-Id")):
+# ✅ FIXED: no Header param, read from request headers manually
+async def require_user(request: Request):
     u = validate_init_data(request.headers.get("X-Telegram-Init-Data",""))
     if not u: return None, None, JSONResponse({"error":"telegram_required"}, status_code=401)
     uid = int(u["id"])
@@ -1127,6 +1124,7 @@ async def require_user(request: Request, x_device_id: str = Header(default="", a
         rip = fwd.split(",")[0].strip() if fwd else (request.client.host if request.client else "")
         if rip: ip_h = hashlib.sha256(rip.encode()).hexdigest()[:16]
     except: pass
+    x_device_id = request.headers.get("X-Device-Id","")
     dev_h = hashlib.sha256(x_device_id.encode()).hexdigest()[:16] if x_device_id else ""
     conn = db()
     try:
@@ -1147,8 +1145,8 @@ async def mini_app(): return HTMLResponse(MINI_APP_HTML)
 async def health(): return {"status":"ok","service":"mega-spark"}
 
 @app.post("/api/me")
-async def api_me(request: Request, x_device_id: str = Header(default="", alias="X-Device-Id")):
-    u, uid, err = await require_user(request, x_device_id)
+async def api_me(request: Request):
+    u, uid, err = await require_user(request)
     if err: return err
     row = get_user(uid)
     return {
@@ -1208,7 +1206,7 @@ async def api_verify(request: Request):
     if not was:
         reward, block = pay_referral_if_eligible(uid)
         if block and block.get("multi"):
-            try: await send_admin(f"🚨 <b>ማስጠንቀቂያ — Multi-Account</b>\n\nተጠቃሚ: <code>{uid}</code>\nReferrer: <code>{block['referrer']}</code>\nምክንያት: {block['reason']}\n\nሪፈራል <b>ተከፍሏል</b> — ዊዝድሮ ጊዜ ያጣሩ።")
+            try: await send_admin(f"🚨 <b>ማስጠንቀቂያ — Multi-Account</b>\n\nተጠቃሚ: <code>{uid}</code>\nReferrer: <code>{block['referrer']}</code>\nምክንያት: {block['reason']}")
             except: pass
         if reward:
             try: await send(int(get_user(uid)["referred_by"]), f"👥 <b>የሪፈራል ሽልማት</b>\n\n+{reward:.2f} ETB ተከፍሏል!")
@@ -1225,7 +1223,6 @@ async def api_tasks(request: Request):
 async def api_ref(request: Request):
     u, uid, err = await require_user(request)
     if err: return err
-    total_count = int(db().execute("SELECT COUNT(*) c FROM users WHERE referred_by=?", (uid,)).fetchone()["c"]) if True else 0
     conn = db()
     try:
         total_count = int(conn.execute("SELECT COUNT(*) c FROM users WHERE referred_by=?", (uid,)).fetchone()["c"])
@@ -1309,7 +1306,7 @@ async def on_startup():
         r = await tg("setWebhook", p)
         print("setWebhook:", r)
 
-# ═══ MINI APP HTML ═══
+# ═══ MINI APP ═══
 MINI_APP_HTML = r"""<!doctype html>
 <html lang="en">
 <head>
