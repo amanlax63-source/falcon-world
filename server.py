@@ -1,9 +1,10 @@
 # ═══════════════════════════════════════════════════════════════
-# 🦅 MEGA SPARK — Complete Production System
-# uvicorn server:app --host 0.0.0.0 --port $PORT
+# ⚡ MEGA SPARK — Complete System
+# Amharic bot messages · English app UI · Dynamic referral
 # ═══════════════════════════════════════════════════════════════
 import json, hmac, hashlib, time, asyncio, os, re, sqlite3, html, secrets
 from urllib.parse import parse_qsl
+from datetime import datetime
 from typing import Optional
 from fastapi import FastAPI, Request, Body, Header
 from fastapi.responses import HTMLResponse, JSONResponse
@@ -33,12 +34,12 @@ DEFAULT_CHANNELS = [
 ]
 
 SERVICES = [
-    ("📢", "Channel Growth", "Grow your Telegram channels"),
-    ("👥", "Group Growth", "Build your community fast"),
-    ("📣", "Advertising & Promotion", "Promote your brand widely"),
-    ("💱", "USDT Buy / Sell", "Exchange USDT securely"),
-    ("📺", "Channel Buy / Sell", "Marketplace for channels"),
-    ("📱", "Social Promotion", "Boost your social media"),
+    ("📢", "Channel Growth", "Telegram channels ማሳደግ"),
+    ("👥", "Group Growth", "Community መገንባት"),
+    ("📣", "Advertising", "Brand ማስታወቂያ"),
+    ("💱", "USDT Buy/Sell", "USDT መለዋወጥ"),
+    ("📺", "Channel Buy/Sell", "Channel ግብይት"),
+    ("📱", "Social Promotion", "Social media ማሳደግ"),
 ]
 
 # ═══ DATABASE ═══
@@ -49,92 +50,59 @@ def db():
     conn.execute("PRAGMA busy_timeout=10000")
     return conn
 
-def _col_exists(conn, t, c):
-    return c in {r[1] for r in conn.execute(f"PRAGMA table_info({t})").fetchall()}
+def _col(conn, t, c): return c in {r[1] for r in conn.execute(f"PRAGMA table_info({t})").fetchall()}
 
 def init_db():
     conn = db()
     try:
         conn.executescript("""
         CREATE TABLE IF NOT EXISTS users (
-            user_id INTEGER PRIMARY KEY,
-            username TEXT DEFAULT '',
-            first_name TEXT DEFAULT '',
-            last_name TEXT DEFAULT '',
-            balance REAL NOT NULL DEFAULT 0,
-            total_earned REAL NOT NULL DEFAULT 0,
-            total_withdrawn REAL NOT NULL DEFAULT 0,
-            referral_earnings REAL NOT NULL DEFAULT 0,
-            daily_earnings REAL NOT NULL DEFAULT 0,
-            task_earnings REAL NOT NULL DEFAULT 0,
-            admin_credits REAL NOT NULL DEFAULT 0,
-            verified INTEGER NOT NULL DEFAULT 0,
-            banned INTEGER NOT NULL DEFAULT 0,
-            ban_reason TEXT DEFAULT '',
-            referred_by INTEGER,
-            referral_paid INTEGER NOT NULL DEFAULT 0,
-            daily_last_claim INTEGER NOT NULL DEFAULT 0,
-            wallet_type TEXT,
-            wallet_number TEXT,
-            wallet_suspicious INTEGER NOT NULL DEFAULT 0,
-            risk_score INTEGER NOT NULL DEFAULT 0,
-            risk_flags TEXT DEFAULT '',
-            device_hash TEXT DEFAULT '',
-            ip_hash TEXT DEFAULT '',
-            captcha_passed INTEGER NOT NULL DEFAULT 0,
-            multi_flag INTEGER NOT NULL DEFAULT 0,
-            created_at INTEGER NOT NULL,
-            updated_at INTEGER NOT NULL,
-            last_active INTEGER NOT NULL DEFAULT 0
+            user_id INTEGER PRIMARY KEY, username TEXT DEFAULT '', first_name TEXT DEFAULT '', last_name TEXT DEFAULT '',
+            balance REAL DEFAULT 0, total_earned REAL DEFAULT 0, total_withdrawn REAL DEFAULT 0,
+            referral_earnings REAL DEFAULT 0, daily_earnings REAL DEFAULT 0, task_earnings REAL DEFAULT 0, admin_credits REAL DEFAULT 0,
+            verified INTEGER DEFAULT 0, banned INTEGER DEFAULT 0, ban_reason TEXT DEFAULT '',
+            referred_by INTEGER, referral_paid INTEGER DEFAULT 0, daily_last_claim INTEGER DEFAULT 0,
+            wallet_type TEXT, wallet_number TEXT, wallet_suspicious INTEGER DEFAULT 0,
+            risk_score INTEGER DEFAULT 0, risk_flags TEXT DEFAULT '', device_hash TEXT DEFAULT '', ip_hash TEXT DEFAULT '',
+            captcha_passed INTEGER DEFAULT 0, multi_flag INTEGER DEFAULT 0, is_test INTEGER DEFAULT 0,
+            created_at INTEGER, updated_at INTEGER, last_active INTEGER DEFAULT 0
         );
         CREATE TABLE IF NOT EXISTS captcha_sessions (
             token TEXT PRIMARY KEY, user_id INTEGER, question TEXT, answer TEXT,
-            attempts INTEGER DEFAULT 0, created_at INTEGER, expires_at INTEGER
-        );
+            attempts INTEGER DEFAULT 0, created_at INTEGER, expires_at INTEGER);
         CREATE TABLE IF NOT EXISTS transactions (
-            id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER, type TEXT,
-            amount REAL, balance_before REAL, balance_after REAL,
-            description TEXT DEFAULT '', reference_id TEXT DEFAULT '',
-            admin_id INTEGER, created_at INTEGER
-        );
+            id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER, type TEXT, amount REAL,
+            balance_before REAL, balance_after REAL, description TEXT DEFAULT '', reference_id TEXT DEFAULT '',
+            admin_id INTEGER, created_at INTEGER);
         CREATE TABLE IF NOT EXISTS withdrawals (
             id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER, amount REAL,
             wallet_type TEXT, wallet_number TEXT, status TEXT DEFAULT 'pending',
-            risk_status TEXT DEFAULT 'normal', admin_id INTEGER,
-            rejection_reason TEXT DEFAULT '', created_at INTEGER, reviewed_at INTEGER
-        );
+            risk_status TEXT DEFAULT 'normal', admin_id INTEGER, rejection_reason TEXT DEFAULT '',
+            created_at INTEGER, reviewed_at INTEGER);
         CREATE TABLE IF NOT EXISTS tasks (
             id INTEGER PRIMARY KEY AUTOINCREMENT, title TEXT, description TEXT DEFAULT '',
-            reward REAL DEFAULT 0, url TEXT DEFAULT '', proof_type TEXT DEFAULT 'text',
-            active INTEGER DEFAULT 1, created_at INTEGER, created_by INTEGER
-        );
+            reward REAL DEFAULT 0, url TEXT DEFAULT '', proof_type TEXT DEFAULT 'photo',
+            active INTEGER DEFAULT 1, created_at INTEGER, created_by INTEGER);
         CREATE TABLE IF NOT EXISTS task_submissions (
             id INTEGER PRIMARY KEY AUTOINCREMENT, task_id INTEGER, user_id INTEGER,
             proof_text TEXT DEFAULT '', proof_image TEXT DEFAULT '', status TEXT DEFAULT 'pending',
-            admin_id INTEGER, rejection_reason TEXT DEFAULT '', created_at INTEGER, reviewed_at INTEGER
-        );
+            admin_id INTEGER, rejection_reason TEXT DEFAULT '', created_at INTEGER, reviewed_at INTEGER);
         CREATE TABLE IF NOT EXISTS required_channels (
-            id INTEGER PRIMARY KEY AUTOINCREMENT, username TEXT UNIQUE, name TEXT,
-            url TEXT, active INTEGER DEFAULT 1, sort_order INTEGER DEFAULT 0,
-            created_at INTEGER, updated_at INTEGER
-        );
+            id INTEGER PRIMARY KEY AUTOINCREMENT, username TEXT UNIQUE, name TEXT, url TEXT,
+            active INTEGER DEFAULT 1, sort_order INTEGER DEFAULT 0, created_at INTEGER, updated_at INTEGER);
         CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT);
         CREATE TABLE IF NOT EXISTS fraud_events (
             id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER, event_type TEXT,
-            risk_score INTEGER DEFAULT 0, details TEXT DEFAULT '', created_at INTEGER
-        );
+            risk_score INTEGER DEFAULT 0, details TEXT DEFAULT '', created_at INTEGER);
         CREATE TABLE IF NOT EXISTS admin_logs (
             id INTEGER PRIMARY KEY AUTOINCREMENT, admin_id INTEGER, action TEXT,
-            target TEXT DEFAULT '', before_value TEXT DEFAULT '', after_value TEXT DEFAULT '',
-            created_at INTEGER
-        );
+            target TEXT DEFAULT '', before_value TEXT DEFAULT '', after_value TEXT DEFAULT '', created_at INTEGER);
         CREATE INDEX IF NOT EXISTS idx_tx_u ON transactions(user_id);
         CREATE INDEX IF NOT EXISTS idx_wd_s ON withdrawals(status);
         CREATE INDEX IF NOT EXISTS idx_ref ON users(referred_by);
         """)
-        for c, ddl in {"multi_flag":"INTEGER NOT NULL DEFAULT 0","last_name":"TEXT DEFAULT ''","device_hash":"TEXT DEFAULT ''","ip_hash":"TEXT DEFAULT ''","risk_score":"INTEGER NOT NULL DEFAULT 0","risk_flags":"TEXT DEFAULT ''"}.items():
-            if not _col_exists(conn, "users", c):
-                conn.execute(f"ALTER TABLE users ADD COLUMN {c} {ddl}")
+        for c, ddl in {"multi_flag":"INTEGER DEFAULT 0","is_test":"INTEGER DEFAULT 0","last_name":"TEXT DEFAULT ''","device_hash":"TEXT DEFAULT ''","ip_hash":"TEXT DEFAULT ''","risk_score":"INTEGER DEFAULT 0","risk_flags":"TEXT DEFAULT ''"}.items():
+            if not _col(conn, "users", c): conn.execute(f"ALTER TABLE users ADD COLUMN {c} {ddl}")
         if conn.execute("SELECT COUNT(*) c FROM required_channels").fetchone()["c"] == 0:
             now = int(time.time())
             for i, c in enumerate(DEFAULT_CHANNELS):
@@ -143,8 +111,7 @@ def init_db():
         for k, v in {"daily_reward":DEFAULT_DAILY,"referral_reward":DEFAULT_REFERRAL,"minimum_withdrawal":DEFAULT_MIN_WITHDRAW,"maintenance_mode":"0"}.items():
             conn.execute("INSERT OR IGNORE INTO settings(key,value) VALUES(?,?)", (k, str(v)))
         conn.commit()
-    finally:
-        conn.close()
+    finally: conn.close()
 
 def get_setting(k, d=None, kind=float):
     conn = db()
@@ -167,6 +134,14 @@ def set_setting(k, v):
 
 def _r2(x): return round(float(x) + 1e-9, 2)
 
+def is_payment_day():
+    try:
+        from zoneinfo import ZoneInfo
+        tz = ZoneInfo("Africa/Addis_Ababa")
+        return datetime.now(tz).weekday() != 6
+    except:
+        return datetime.utcnow().weekday() != 6
+
 def credit(uid, amount, kind, desc="", ref="", admin_id=None):
     amount = _r2(amount)
     if amount <= 0: return False, "Invalid"
@@ -174,7 +149,7 @@ def credit(uid, amount, kind, desc="", ref="", admin_id=None):
     try:
         conn.execute("BEGIN IMMEDIATE")
         r = conn.execute("SELECT balance FROM users WHERE user_id=?", (uid,)).fetchone()
-        if not r: conn.execute("ROLLBACK"); return False, "User not found"
+        if not r: conn.execute("ROLLBACK"); return False, "No user"
         before = float(r["balance"]); after = _r2(before + amount)
         conn.execute("UPDATE users SET balance=?, total_earned=ROUND(total_earned+?,8), updated_at=? WHERE user_id=?",
                      (after, amount, int(time.time()), uid))
@@ -190,20 +165,20 @@ def credit(uid, amount, kind, desc="", ref="", admin_id=None):
         return False, str(e)
     finally: conn.close()
 
-def debit(uid, amount, kind, desc="", ref=""):
+def debit(uid, amount, kind, desc="", ref="", admin_id=None):
     amount = _r2(amount)
     if amount <= 0: return False, "Invalid"
     conn = db()
     try:
         conn.execute("BEGIN IMMEDIATE")
         r = conn.execute("SELECT balance FROM users WHERE user_id=?", (uid,)).fetchone()
-        if not r: conn.execute("ROLLBACK"); return False, "User not found"
+        if not r: conn.execute("ROLLBACK"); return False, "No user"
         before = float(r["balance"])
         if before < amount: conn.execute("ROLLBACK"); return False, "Insufficient"
         after = _r2(before - amount)
         conn.execute("UPDATE users SET balance=?, updated_at=? WHERE user_id=?", (after, int(time.time()), uid))
-        conn.execute("INSERT INTO transactions(user_id,type,amount,balance_before,balance_after,description,reference_id,created_at) VALUES(?,?,?,?,?,?,?,?)",
-                     (uid, kind.upper(), amount, before, after, desc, str(ref), int(time.time())))
+        conn.execute("INSERT INTO transactions(user_id,type,amount,balance_before,balance_after,description,reference_id,admin_id,created_at) VALUES(?,?,?,?,?,?,?,?,?)",
+                     (uid, kind.upper(), amount, before, after, desc, str(ref), admin_id, int(time.time())))
         conn.execute("COMMIT")
         return True, after
     except Exception as e:
@@ -234,7 +209,6 @@ def get_user(uid):
     finally: conn.close()
 
 def is_admin(uid): return int(uid) in ADMIN_IDS
-
 def is_banned(uid):
     u = get_user(uid); return bool(u and u["banned"])
 
@@ -277,25 +251,8 @@ def get_all_referrals(uid):
                             (uid,)).fetchall()
     finally: conn.close()
 
-def detect_duplicate_device(device_hash, current_uid):
-    """Returns count of OTHER verified users sharing the same device hash."""
-    if not device_hash: return 0
-    conn = db()
-    try:
-        return int(conn.execute("SELECT COUNT(DISTINCT user_id) c FROM users WHERE device_hash=? AND user_id!=? AND verified=1",
-                                (device_hash, current_uid)).fetchone()["c"])
-    finally: conn.close()
-
-def detect_duplicate_ip(ip_hash, current_uid):
-    if not ip_hash: return 0
-    conn = db()
-    try:
-        return int(conn.execute("SELECT COUNT(DISTINCT user_id) c FROM users WHERE ip_hash=? AND user_id!=? AND verified=1 AND last_active > ?",
-                                (ip_hash, current_uid, int(time.time())-86400)).fetchone()["c"])
-    finally: conn.close()
-
 def pay_referral_if_eligible(uid):
-    """Pay referrer if eligible. BLOCK if multi-account detected."""
+    """Pay referrer with CURRENT price at time of payment."""
     conn = db()
     try:
         conn.execute("BEGIN IMMEDIATE")
@@ -304,43 +261,27 @@ def pay_referral_if_eligible(uid):
             conn.execute("ROLLBACK"); return None, None
         ref_id = child["referred_by"]
         if not ref_id or ref_id == uid:
-            conn.execute("UPDATE users SET referral_paid=1 WHERE user_id=?", (uid,))
-            conn.execute("COMMIT"); return None, None
-        ref = conn.execute("SELECT banned FROM users WHERE user_id=?", (ref_id,)).fetchone()
+            conn.execute("UPDATE users SET referral_paid=1 WHERE user_id=?", (uid,)); conn.execute("COMMIT"); return None, None
+        ref = conn.execute("SELECT banned, device_hash FROM users WHERE user_id=?", (ref_id,)).fetchone()
         if not ref or ref["banned"]:
-            conn.execute("UPDATE users SET referral_paid=1 WHERE user_id=?", (uid,))
-            conn.execute("COMMIT"); return None, None
-        
-        # ─── MULTI-ACCOUNT CHECK ───
-        # Check if referrer shares device/IP with this new user
-        ref_full = conn.execute("SELECT device_hash, ip_hash FROM users WHERE user_id=?", (ref_id,)).fetchone()
-        multi = False
-        reason = ""
-        if child["device_hash"] and ref_full["device_hash"] and child["device_hash"] == ref_full["device_hash"]:
+            conn.execute("UPDATE users SET referral_paid=1 WHERE user_id=?", (uid,)); conn.execute("COMMIT"); return None, None
+        multi = False; reason = ""
+        if child["device_hash"] and ref["device_hash"] and child["device_hash"] == ref["device_hash"]:
             multi = True; reason = "Same device as referrer"
-        elif child["ip_hash"] and ref_full["ip_hash"] and child["ip_hash"] == ref_full["ip_hash"] and (int(time.time()) - int(child["created_at"])) < 3600:
-            multi = True; reason = "Same IP + rapid verify"
-        
-        if multi:
-            conn.execute("UPDATE users SET referral_paid=1, multi_flag=1, risk_score=risk_score+60 WHERE user_id=?", (uid,))
-            conn.execute("UPDATE users SET risk_score=risk_score+60, multi_flag=1 WHERE user_id=?", (ref_id,))
-            conn.execute("INSERT INTO fraud_events(user_id,event_type,risk_score,details,created_at) VALUES(?,?,?,?,?)",
-                         (uid, "multi_account_referral", 60, reason, int(time.time())))
-            conn.execute("COMMIT")
-            return None, {"multi": True, "reason": reason, "referrer": ref_id}
-        
         reward = get_setting("referral_reward", DEFAULT_REFERRAL, kind=float)
         cur = conn.execute("UPDATE users SET referral_paid=1 WHERE user_id=? AND referral_paid=0", (uid,))
         if cur.rowcount != 1:
             conn.execute("ROLLBACK"); return None, None
+        if multi:
+            conn.execute("UPDATE users SET multi_flag=1, risk_score=risk_score+30 WHERE user_id IN (?,?)", (uid, ref_id))
         conn.execute("COMMIT")
     except:
         try: conn.execute("ROLLBACK")
         except: pass
         return None, None
     finally: conn.close()
-    ok, _ = credit(ref_id, reward, "referral", f"Referral reward from user {uid}", ref=str(uid))
-    return (reward if ok else None), None
+    ok, _ = credit(ref_id, reward, "referral", f"Referral reward — user {uid}", ref=str(uid))
+    return (reward if ok else None), ({"multi": True, "reason": reason, "referrer": ref_id} if multi else None)
 
 def claim_daily(uid):
     conn = db()
@@ -352,8 +293,7 @@ def claim_daily(uid):
         if not r["verified"]: conn.execute("ROLLBACK"); return False, {"error":"not_verified"}
         last = int(r["daily_last_claim"] or 0); now = int(time.time())
         if last and (now - last) < 86400:
-            conn.execute("ROLLBACK")
-            return False, {"error":"cooldown","remaining":86400-(now-last)}
+            conn.execute("ROLLBACK"); return False, {"error":"cooldown","remaining":86400-(now-last)}
         reward = get_setting("daily_reward", DEFAULT_DAILY, kind=float)
         cur = conn.execute("UPDATE users SET daily_last_claim=? WHERE user_id=? AND (daily_last_claim=0 OR ?-daily_last_claim >= 86400)",
                            (now, uid, now))
@@ -381,12 +321,12 @@ def daily_status(uid):
 def validate_wallet(wt, num):
     wt = (wt or "").strip().lower(); num = (num or "").strip()
     if wt == "cbe":
-        if not re.fullmatch(r"1000\d{9}", num): return False, "CBE must be 13 digits starting 1000."
+        if not re.fullmatch(r"1000\d{9}", num): return False, "CBE 13 digits, starts with 1000"
         return True, "CBE"
     if wt == "telebirr":
-        if not re.fullmatch(r"(09|07)\d{8}", num): return False, "Telebirr must be 10 digits starting 09 or 07."
+        if not re.fullmatch(r"(09|07)\d{8}", num): return False, "Telebirr 10 digits, starts 09 or 07"
         return True, "Telebirr"
-    return False, "Invalid wallet type."
+    return False, "Invalid type"
 
 def save_wallet(uid, wt, num):
     ok, res = validate_wallet(wt, num)
@@ -399,23 +339,23 @@ def save_wallet(uid, wt, num):
                      (res, num, 1 if susp else 0, int(time.time()), uid))
         conn.commit()
     finally: conn.close()
-    if susp: add_risk(uid, 40, "duplicate_wallet", f"Wallet {res} shared with {dup} user(s)")
-    return True, "Wallet saved.", susp
+    if susp: add_risk(uid, 40, "duplicate_wallet", f"Shared with {dup}")
+    return True, "Wallet saved", susp
 
 def create_withdrawal(uid, amount):
     amount = _r2(amount)
     minimum = get_setting("minimum_withdrawal", DEFAULT_MIN_WITHDRAW, kind=float)
-    if amount < minimum: return False, f"Minimum withdrawal is {minimum:.2f} ETB."
+    if amount < minimum: return False, f"Minimum withdrawal is {minimum:.2f} ETB"
     conn = db()
     try:
         conn.execute("BEGIN IMMEDIATE")
         u = conn.execute("SELECT banned, wallet_type, wallet_number, balance, risk_score, multi_flag FROM users WHERE user_id=?", (uid,)).fetchone()
-        if not u: conn.execute("ROLLBACK"); return False, "User not found."
-        if u["banned"]: conn.execute("ROLLBACK"); return False, "Account banned."
-        if not u["wallet_type"] or not u["wallet_number"]: conn.execute("ROLLBACK"); return False, "Save your wallet first."
-        if float(u["balance"]) < amount: conn.execute("ROLLBACK"); return False, "Insufficient balance."
+        if not u: conn.execute("ROLLBACK"); return False, "User not found"
+        if u["banned"]: conn.execute("ROLLBACK"); return False, "Account banned"
+        if not u["wallet_type"] or not u["wallet_number"]: conn.execute("ROLLBACK"); return False, "Save wallet first"
+        if float(u["balance"]) < amount: conn.execute("ROLLBACK"); return False, "Insufficient balance"
         pending = conn.execute("SELECT id FROM withdrawals WHERE user_id=? AND status='pending' LIMIT 1", (uid,)).fetchone()
-        if pending: conn.execute("ROLLBACK"); return False, "You already have a pending withdrawal."
+        if pending: conn.execute("ROLLBACK"); return False, "You have a pending withdrawal"
         risk_status = "flagged" if (u["risk_score"] or 0) >= 50 or u["multi_flag"] else "normal"
         cur = conn.execute("INSERT INTO withdrawals(user_id,amount,wallet_type,wallet_number,status,risk_status,created_at) VALUES(?,?,?,?,?,?,?)",
                            (uid, amount, u["wallet_type"], u["wallet_number"], "pending", risk_status, int(time.time())))
@@ -424,14 +364,14 @@ def create_withdrawal(uid, amount):
     except:
         try: conn.execute("ROLLBACK")
         except: pass
-        return False, "Server error."
+        return False, "Server error"
     finally: conn.close()
     ok, _ = debit(uid, amount, "withdrawal_hold", f"Withdrawal #{wid}")
     if not ok:
         conn = db()
         try: conn.execute("DELETE FROM withdrawals WHERE id=?", (wid,)); conn.commit()
         finally: conn.close()
-        return False, "Balance error."
+        return False, "Balance error"
     return True, {"withdrawal_id": wid, "amount": amount, "risk_status": risk_status}
 
 def approve_withdrawal(wid, aid):
@@ -439,7 +379,7 @@ def approve_withdrawal(wid, aid):
     try:
         conn.execute("BEGIN IMMEDIATE")
         w = conn.execute("SELECT * FROM withdrawals WHERE id=? AND status='pending'", (wid,)).fetchone()
-        if not w: conn.execute("ROLLBACK"); return False, "Not pending."
+        if not w: conn.execute("ROLLBACK"); return False, "Not pending"
         conn.execute("UPDATE withdrawals SET status='approved', admin_id=?, reviewed_at=? WHERE id=?", (aid, int(time.time()), wid))
         conn.execute("UPDATE users SET total_withdrawn=ROUND(total_withdrawn+?,8) WHERE user_id=?", (float(w["amount"]), w["user_id"]))
         conn.execute("COMMIT")
@@ -455,7 +395,7 @@ def reject_withdrawal(wid, aid, reason=""):
     try:
         conn.execute("BEGIN IMMEDIATE")
         w = conn.execute("SELECT * FROM withdrawals WHERE id=? AND status='pending'", (wid,)).fetchone()
-        if not w: conn.execute("ROLLBACK"); return False, "Not pending."
+        if not w: conn.execute("ROLLBACK"); return False, "Not pending"
         conn.execute("UPDATE withdrawals SET status='rejected', admin_id=?, reviewed_at=?, rejection_reason=? WHERE id=?",
                      (aid, int(time.time()), reason or "", wid))
         conn.execute("COMMIT")
@@ -487,15 +427,15 @@ def get_user_task_status(uid, tid):
     finally: conn.close()
 
 def submit_task(uid, tid, pt="", pi=""):
-    if not (pt or pi): return False, "Proof required."
+    if not (pt or pi): return False, "Proof required"
     conn = db()
     try:
         conn.execute("BEGIN IMMEDIATE")
         t = conn.execute("SELECT * FROM tasks WHERE id=? AND active=1", (tid,)).fetchone()
-        if not t: conn.execute("ROLLBACK"); return False, "Task not found."
+        if not t: conn.execute("ROLLBACK"); return False, "Task not found"
         last = conn.execute("SELECT status FROM task_submissions WHERE user_id=? AND task_id=? ORDER BY id DESC LIMIT 1", (uid, tid)).fetchone()
-        if last and last["status"] == "pending": conn.execute("ROLLBACK"); return False, "Previous submission pending."
-        if last and last["status"] == "approved": conn.execute("ROLLBACK"); return False, "Already approved."
+        if last and last["status"] == "pending": conn.execute("ROLLBACK"); return False, "Previous submission pending"
+        if last and last["status"] == "approved": conn.execute("ROLLBACK"); return False, "Already approved"
         cur = conn.execute("INSERT INTO task_submissions(task_id,user_id,proof_text,proof_image,status,created_at) VALUES(?,?,?,?,?,?)",
                            (tid, uid, pt[:2000], pi[:500], "pending", int(time.time())))
         sid = cur.lastrowid
@@ -512,7 +452,7 @@ def approve_task_submission(sid, aid):
     try:
         conn.execute("BEGIN IMMEDIATE")
         s = conn.execute("SELECT ts.*, t.reward, t.title FROM task_submissions ts JOIN tasks t ON t.id=ts.task_id WHERE ts.id=? AND ts.status='pending'", (sid,)).fetchone()
-        if not s: conn.execute("ROLLBACK"); return False, "Not pending."
+        if not s: conn.execute("ROLLBACK"); return False, "Not pending"
         conn.execute("UPDATE task_submissions SET status='approved', admin_id=?, reviewed_at=? WHERE id=?", (aid, int(time.time()), sid))
         conn.execute("COMMIT")
     except:
@@ -532,6 +472,7 @@ def reject_task_submission(sid, aid, reason=""):
         return True
     finally: conn.close()
 
+# ═══ Telegram ═══
 async def tg(method, data=None):
     if not BOT_TOKEN: return {"ok": False}
     try:
@@ -546,8 +487,16 @@ async def send(chat_id, text, kb=None):
     if kb: d["reply_markup"] = kb
     return await tg("sendMessage", d)
 
+async def send_photo(chat_id, photo_id, caption="", kb=None):
+    d = {"chat_id": chat_id, "photo": photo_id, "caption": caption, "parse_mode": "HTML"}
+    if kb: d["reply_markup"] = kb
+    return await tg("sendPhoto", d)
+
 async def send_admin(text, kb=None):
     for aid in ADMIN_IDS: await send(aid, text, kb)
+
+async def send_admin_photo(photo_id, caption="", kb=None):
+    for aid in ADMIN_IDS: await send_photo(aid, photo_id, caption, kb)
 
 async def check_channel_membership(uid, ch):
     r = await tg("getChatMember", {"chat_id": ch, "user_id": uid})
@@ -565,7 +514,8 @@ async def verify_all_channels(uid):
     return (all(x["joined"] for x in out) and len(out) > 0), out
 
 def make_captcha(uid):
-    a = secrets.randbelow(9) + 2; b = secrets.randbelow(9) + 1
+    a = secrets.randbelow(8) + 3
+    b = secrets.randbelow(8) + 2
     op = secrets.choice(["+","-"])
     if op == "+": ans = a+b
     else:
@@ -577,7 +527,7 @@ def make_captcha(uid):
     try:
         conn.execute("DELETE FROM captcha_sessions WHERE user_id=?", (uid,))
         conn.execute("INSERT INTO captcha_sessions(token,user_id,question,answer,attempts,created_at,expires_at) VALUES(?,?,?,?,?,?,?)",
-                     (t, uid, q, str(ans), 0, int(time.time()), int(time.time())+300))
+                     (t, uid, q, str(ans), 0, int(time.time()), int(time.time())+600))
         conn.commit()
     finally: conn.close()
     return t, q
@@ -587,24 +537,39 @@ def verify_captcha(t, ans):
     try:
         conn.execute("BEGIN IMMEDIATE")
         r = conn.execute("SELECT * FROM captcha_sessions WHERE token=?", (t,)).fetchone()
-        if not r: conn.execute("ROLLBACK"); return False, "expired"
+        if not r: conn.execute("ROLLBACK"); return False, "expired", None, None
         if int(r["expires_at"]) < int(time.time()):
-            conn.execute("DELETE FROM captcha_sessions WHERE token=?", (t,)); conn.execute("COMMIT"); return False, "expired"
+            conn.execute("DELETE FROM captcha_sessions WHERE token=?", (t,)); conn.execute("COMMIT")
+            return False, "expired", None, None
         if int(r["attempts"]) >= 5:
-            conn.execute("DELETE FROM captcha_sessions WHERE token=?", (t,)); conn.execute("COMMIT"); return False, "too_many"
+            conn.execute("DELETE FROM captcha_sessions WHERE token=?", (t,)); conn.execute("COMMIT")
+            return False, "too_many", None, None
         if str(r["answer"]).strip() != str(ans).strip():
-            conn.execute("UPDATE captcha_sessions SET attempts=attempts+1 WHERE token=?", (t,)); conn.execute("COMMIT"); return False, "wrong"
+            conn.execute("DELETE FROM captcha_sessions WHERE token=?", (t,))
+            conn.execute("COMMIT")
+            conn2 = db()
+            try:
+                a = secrets.randbelow(8) + 3; b = secrets.randbelow(8) + 2
+                op = secrets.choice(["+","-"])
+                if op == "+": nans = a+b
+                else:
+                    if a<b: a,b = b,a
+                    nans = a-b
+                nq = f"{a} {op} {b} = ?"
+                nt = secrets.token_urlsafe(24)
+                conn2.execute("INSERT INTO captcha_sessions(token,user_id,question,answer,attempts,created_at,expires_at) VALUES(?,?,?,?,?,?,?)",
+                              (nt, r["user_id"], nq, str(nans), 0, int(time.time()), int(time.time())+600))
+                conn2.commit()
+            finally: conn2.close()
+            return False, "wrong", nt, nq
         conn.execute("UPDATE users SET captcha_passed=1 WHERE user_id=?", (r["user_id"],))
         conn.execute("DELETE FROM captcha_sessions WHERE token=?", (t,))
-        conn.execute("COMMIT"); return True, "ok"
+        conn.execute("COMMIT"); return True, "ok", None, None
     except:
         try: conn.execute("ROLLBACK")
         except: pass
-        return False, "error"
+        return False, "error", None, None
     finally: conn.close()
-
-def main_kb():
-    return {"inline_keyboard": [[{"text": "🚀 Open Mega Spark", "web_app": {"url": MINI_APP_URL}}]]}
 
 def parse_ref(text):
     parts = text.split(maxsplit=1)
@@ -614,193 +579,31 @@ def parse_ref(text):
     if p.isdigit(): return int(p)
     return None
 
-async def handle_message(msg):
-    chat = msg.get("chat", {}); user = msg.get("from", {})
-    cid = chat.get("id"); uid = user.get("id")
-    if not cid or not uid: return
-    text = (msg.get("text") or "").strip()
-    ref = parse_ref(text) if text.startswith("/start") else None
-    ensure_user(uid, user.get("username",""), user.get("first_name",""), user.get("last_name",""), ref)
-    if is_banned(uid) and not is_admin(uid):
-        await send(cid, "🚫 Account restricted.\nSupport: " + SUPPORT_USERNAME); return
-
-    if text.startswith("/start"):
-        await send(cid,
-            "⚡ <b>WELCOME TO MEGA SPARK</b>\n\n"
-            "💰 Earn & Complete Tasks\n🎁 Daily Rewards\n👥 Referral Rewards\n🚀 New Opportunities\n\n"
-            f"💱 USDT & Advertising\n📣 Contact: {SUPPORT_USERNAME}\n\n"
-            "⚠️ <b>One account per person.</b>\nMulti-account usage = rejection.\n\n"
-            "Tap below to begin 👇", main_kb())
-        return
-    if text == "/id":
-        await send(cid, f"🆔 <code>{uid}</code>"); return
-    if text == "/help":
-        await send(cid, "⚡ <b>Mega Spark Help</b>\n\n1. Open app\n2. Verify\n3. Earn\n4. Withdraw (min 30 ETB)\n\n⚠️ Multi-account = rejection", main_kb()); return
-
-    if text.startswith("/admin") and is_admin(uid): await admin_dash(cid); return
-    if text.startswith("/stats") and is_admin(uid): await admin_dash(cid); return
-    if text.startswith("/checkuser") and is_admin(uid):
-        p = text.split()
-        if len(p) != 2 or not p[1].isdigit(): await send(cid, "Usage: /checkuser ID"); return
-        await user_audit(cid, int(p[1])); return
-    if text.startswith("/addbalance") and is_admin(uid):
-        p = text.split()
-        if len(p) != 3: await send(cid, "Usage: /addbalance ID AMT"); return
-        try: tid = int(p[1]); amt = float(p[2])
-        except: await send(cid, "Invalid"); return
-        if not get_user(tid): await send(cid, "Not found"); return
-        if amt > 0: credit(tid, amt, "admin", f"Admin {uid}", admin_id=uid)
-        else: debit(tid, abs(amt), "admin", f"Admin {uid}")
-        log_admin(uid, "addbalance", tid, "", amt)
-        await send(cid, f"✅ {amt:+.2f} ETB"); return
-    if text.startswith("/ban") and is_admin(uid):
-        p = text.split()
-        if len(p) < 2 or not p[1].isdigit(): await send(cid, "Usage: /ban ID [reason]"); return
-        tid = int(p[1]); reason = " ".join(p[2:]) or "Policy"
-        conn = db()
-        try:
-            conn.execute("UPDATE users SET banned=1, ban_reason=?, updated_at=? WHERE user_id=?", (reason, int(time.time()), tid))
-            conn.commit()
-        finally: conn.close()
-        await send(cid, f"🚫 Banned {tid}")
-        try: await send(tid, f"🚫 Restricted: {reason}")
-        except: pass
-        return
-    if text.startswith("/unban") and is_admin(uid):
-        p = text.split()
-        if len(p) != 2 or not p[1].isdigit(): await send(cid, "Usage: /unban ID"); return
-        conn = db()
-        try:
-            conn.execute("UPDATE users SET banned=0, ban_reason='', updated_at=? WHERE user_id=?", (int(time.time()), int(p[1])))
-            conn.commit()
-        finally: conn.close()
-        await send(cid, f"✅ Unbanned"); return
-    if text.startswith("/setdaily") and is_admin(uid):
-        try: v = float(text.split()[1]); set_setting("daily_reward", v); await send(cid, f"✅ Daily={v}")
-        except: await send(cid, "Usage: /setdaily 0.5")
-        return
-    if text.startswith("/setref") and is_admin(uid):
-        try: v = float(text.split()[1]); set_setting("referral_reward", v); await send(cid, f"✅ Referral={v}")
-        except: await send(cid, "Usage: /setref 2")
-        return
-    if text.startswith("/setminwithdraw") and is_admin(uid):
-        try: v = float(text.split()[1]); set_setting("minimum_withdrawal", v); await send(cid, f"✅ Min={v}")
-        except: await send(cid, "Usage: /setminwithdraw 30")
-        return
-    if text == "/channels" and is_admin(uid):
-        ch = get_channels(active_only=False)
-        lines = ["📢 <b>Channels</b>"]
-        for c in ch:
-            st = "✅" if c["active"] else "❌"
-            lines.append(f"{st} <b>{html.escape(c['name'])}</b> — {html.escape(c['username'])}")
-        lines.append("\n/addchannel @u | Name | URL\n/removechannel @u\n/togglechannel @u")
-        await send(cid, "\n".join(lines)); return
-    if text.startswith("/addchannel") and is_admin(uid):
-        parts = [x.strip() for x in text.split("|", 2)]
-        if len(parts) != 3: await send(cid, "Usage: /addchannel @u | Name | URL"); return
-        first = parts[0].replace("/addchannel","").strip()
-        if not first.startswith("@"): first = "@"+first
-        conn = db()
-        try:
-            mx = conn.execute("SELECT COALESCE(MAX(sort_order),0) m FROM required_channels").fetchone()["m"]
-            conn.execute("INSERT INTO required_channels(username,name,url,active,sort_order,created_at,updated_at) VALUES(?,?,?,?,?,?,?)",
-                         (first, parts[1], parts[2], 1, int(mx)+1, int(time.time()), int(time.time())))
-            conn.commit()
-        except sqlite3.IntegrityError:
-            await send(cid, "❌ Exists"); return
-        finally: conn.close()
-        await send(cid, f"✅ Added {first}"); return
-    if text.startswith("/removechannel") and is_admin(uid):
-        p = text.split()
-        if len(p) != 2: await send(cid, "Usage: /removechannel @u"); return
-        u = p[1] if p[1].startswith("@") else "@"+p[1]
-        conn = db()
-        try:
-            cur = conn.execute("DELETE FROM required_channels WHERE username=?", (u,)); conn.commit()
-        finally: conn.close()
-        await send(cid, "✅ Removed" if cur.rowcount else "❌ Not found"); return
-    if text.startswith("/togglechannel") and is_admin(uid):
-        p = text.split()
-        if len(p) != 2: await send(cid, "Usage: /togglechannel @u"); return
-        u = p[1] if p[1].startswith("@") else "@"+p[1]
-        conn = db()
-        try:
-            r = conn.execute("SELECT active FROM required_channels WHERE username=?", (u,)).fetchone()
-            if not r: await send(cid, "❌ Not found"); return
-            n = 0 if r["active"] else 1
-            conn.execute("UPDATE required_channels SET active=?, updated_at=? WHERE username=?", (n, int(time.time()), u))
-            conn.commit()
-        finally: conn.close()
-        await send(cid, f"✅ Now {'ON' if n else 'OFF'}"); return
-    if text.startswith("/editchannel") and is_admin(uid):
-        parts = [x.strip() for x in text.split("|", 3)]
-        if len(parts) != 4: await send(cid, "Usage: /editchannel @old | @new | Name | URL"); return
-        old = parts[0].replace("/editchannel","").strip()
-        if not old.startswith("@"): old = "@"+old
-        new, name, url = parts[1], parts[2], parts[3]
-        if not new.startswith("@"): new = "@"+new
-        conn = db()
-        try:
-            cur = conn.execute("UPDATE required_channels SET username=?, name=?, url=?, updated_at=? WHERE username=?",
-                               (new, name, url, int(time.time()), old)); conn.commit()
-        finally: conn.close()
-        await send(cid, "✅ Updated" if cur.rowcount else "❌ Not found"); return
-    if text.startswith("/addtask") and is_admin(uid):
-        parts = text.replace("/addtask","",1).strip().split("|")
-        if len(parts) != 4: await send(cid, "Usage: /addtask Title | Desc | Reward | URL"); return
-        try: rw = float(parts[2].strip())
-        except: await send(cid, "Bad reward"); return
-        conn = db()
-        try:
-            cur = conn.execute("INSERT INTO tasks(title,description,reward,url,proof_type,active,created_at,created_by) VALUES(?,?,?,?,?,1,?,?)",
-                               (parts[0].strip(), parts[1].strip(), rw, parts[3].strip(), "text", int(time.time()), uid))
-            conn.commit(); tid = cur.lastrowid
-        finally: conn.close()
-        await send(cid, f"✅ Task #{tid}"); return
-    if text.startswith("/deltask") and is_admin(uid):
-        p = text.split()
-        if len(p) != 2 or not p[1].isdigit(): await send(cid, "Usage: /deltask ID"); return
-        conn = db()
-        try:
-            conn.execute("UPDATE tasks SET active=0 WHERE id=?", (int(p[1]),)); conn.commit()
-        finally: conn.close()
-        await send(cid, f"✅ Disabled"); return
-    if text == "/tasks" and is_admin(uid):
-        ts = get_tasks(False)
-        if not ts: await send(cid, "No tasks"); return
-        lines = ["📋 <b>Tasks</b>"]
-        for t in ts:
-            st = "✅" if t["active"] else "❌"
-            lines.append(f"{st} #{t['id']} {html.escape(t['title'])} — {t['reward']:.2f}")
-        await send(cid, "\n".join(lines)); return
-    if text == "/withdrawals" and is_admin(uid):
-        conn = db()
-        try:
-            wds = conn.execute("SELECT id FROM withdrawals WHERE status='pending' ORDER BY id ASC LIMIT 10").fetchall()
-        finally: conn.close()
-        if not wds: await send(cid, "No pending withdrawals"); return
-        for w in wds: await send_withdrawal_admin(w["id"])
-        return
-    if text == "/maintenance" and is_admin(uid):
-        cur = get_setting("maintenance_mode", "0", kind=str) == "1"
-        set_setting("maintenance_mode", "0" if cur else "1")
-        await send(cid, f"✅ Maintenance {'OFF' if cur else 'ON'}"); return
-    if is_admin(uid):
-        await send(cid, "Admin: /admin /stats /checkuser /ban /unban /addbalance /setdaily /setref /setminwithdraw /channels /addchannel /removechannel /togglechannel /editchannel /addtask /deltask /tasks /withdrawals /maintenance")
-    else:
-        await send(cid, "Tap below 🚀", main_kb())
+# ═══ AMHARIC BOT MESSAGES ═══
+WELCOME_MSG = (
+    "⚡ <b>ወደ Mega Spark እንኳን በደህና መጡ</b>\n\n"
+    "💰 ያግኙ እና ተግባሮችን ያጠናቅቁ\n"
+    "🎁 የቀን ሽልማቶች\n"
+    "👥 የሪፈራል ሽልማቶች\n"
+    "🚀 አዲስ እድሎች\n\n"
+    "💱 USDT እና ማስታወቂያ\n"
+    f"📣 አግኙን: {SUPPORT_USERNAME}\n\n"
+    "⚠️ <b>አንድ ሰው አንድ አካውንት ብቻ</b>\n"
+    "ብዙ አካውንት መጠቀም = ክፍያ ውድቅ\n\n"
+    "ለመጀመር ከታች ያለውን የ Menu ቁልፍ ይጫኑ 👇"
+)
 
 def wd_kb(wid):
     return {"inline_keyboard": [
-        [{"text": "✅ Approve", "callback_data": f"wdok:{wid}"},
-         {"text": "❌ Reject & Refund", "callback_data": f"wdno:{wid}"}],
-        [{"text": "👥 Referrals", "callback_data": f"wdrefs:{wid}:0"},
-         {"text": "📊 Full Audit", "callback_data": f"wdaudit:{wid}"}],
-        [{"text": "🚫 Ban User", "callback_data": f"wdban:{wid}"}],
+        [{"text": "✅ አጽድቅ", "callback_data": f"wdok:{wid}"},
+         {"text": "❌ ውድቅ አድርግ", "callback_data": f"wdno:{wid}"}],
+        [{"text": "👥 ሪፈራሎች", "callback_data": f"wdrefs:{wid}:0"},
+         {"text": "📊 ሙሉ መረጃ", "callback_data": f"wdaudit:{wid}"}],
+        [{"text": "🚫 ተጠቃሚውን አግድ", "callback_data": f"wdban:{wid}"}],
     ]}
 
 def sub_kb(sid):
-    return {"inline_keyboard": [[{"text":"✅ Approve","callback_data":f"tskok:{sid}"},{"text":"❌ Reject","callback_data":f"tskno:{sid}"}]]}
+    return {"inline_keyboard": [[{"text":"✅ አጽድቅ","callback_data":f"tskok:{sid}"},{"text":"❌ ውድቅ","callback_data":f"tskno:{sid}"}]]}
 
 def fmt_user(u):
     name = html.escape((u["first_name"] or "") + (" " + u["last_name"] if u["last_name"] else "") or u["username"] or str(u["user_id"]))
@@ -820,68 +623,74 @@ async def send_withdrawal_admin(wid):
         if u["device_hash"]:
             multi_count = int(conn.execute("SELECT COUNT(DISTINCT user_id) c FROM users WHERE device_hash=? AND user_id!=?", (u["device_hash"], u["user_id"])).fetchone()["c"])
     finally: conn.close()
-    risk = "🟢 Normal"
-    if (u["risk_score"] or 0) >= 50 or u["multi_flag"] or multi_count >= 2: risk = "🔴 HIGH RISK"
-    elif (u["risk_score"] or 0) >= 30: risk = "🟡 Review"
+    risk = "🟢 ጥሩ"
+    if u["multi_flag"] or multi_count >= 3: risk = "🔴 ከፍተኛ አደጋ"
+    elif (u["risk_score"] or 0) >= 30: risk = "🟡 መመርመር ያስፈልጋል"
+    day_note = "✅ የክፍያ ቀን" if is_payment_day() else "🛑 እሁድ — ክፍያ የለም"
     text = (
-        f"💸 <b>NEW WITHDRAWAL REQUEST</b>\n\n"
+        f"💸 <b>አዲስ የዊዝድሮ ጥያቄ</b>\n\n"
         f"{fmt_user(u)}\n"
         f"🌐 IP: <code>{html.escape(u['ip_hash'] or 'unknown')}</code>\n"
-        f"📱 Device: <code>{html.escape((u['device_hash'] or 'unknown')[:16])}</code>\n\n"
-        f"💰 <b>Amount: {w['amount']:.2f} ETB</b>\n"
+        f"📱 Device: <code>{html.escape((u['device_hash'] or 'unknown')[:20])}</code>\n\n"
+        f"💰 <b>መጠን: {w['amount']:.2f} ETB</b>\n"
         f"🏦 {html.escape(w['wallet_type'])}: <code>{html.escape(w['wallet_number'])}</code>\n\n"
-        f"<b>📊 Earnings Breakdown</b>\n"
-        f"├ 🎁 Bonus: {float(u['daily_earnings'] or 0):.2f} ETB\n"
-        f"├ 👥 Referral: {float(u['referral_earnings'] or 0):.2f} ETB\n"
-        f"├ 📋 Task: {float(u['task_earnings'] or 0):.2f} ETB\n"
-        f"├ 💼 Admin: {float(u['admin_credits'] or 0):.2f} ETB\n"
-        f"└ <b>Total: {float(u['total_earned'] or 0):.2f} ETB</b>\n\n"
-        f"<b>👥 Referrals</b>\n"
-        f"├ Total invited: {refs_total}\n"
-        f"├ Verified & paid: {refs_paid}\n"
-        f"└ Multi-account flags: {multi_count}\n\n"
-        f"<b>🛡 Risk</b>: {risk} (score {u['risk_score'] or 0})\n"
-        f"Flags: {html.escape(u['risk_flags'] or 'none')}\n"
-        f"Multi: {'🚨 YES' if u['multi_flag'] else '✅ No'}"
+        f"<b>📊 ገቢ ማጠቃለያ</b>\n"
+        f"├ 🎁 ቦነስ: {float(u['daily_earnings'] or 0):.2f}\n"
+        f"├ 👥 ሪፈራል: {float(u['referral_earnings'] or 0):.2f}\n"
+        f"├ 📋 ታስክ: {float(u['task_earnings'] or 0):.2f}\n"
+        f"├ 💼 አድሚን: {float(u['admin_credits'] or 0):.2f}\n"
+        f"└ <b>ጠቅላላ: {float(u['total_earned'] or 0):.2f} ETB</b>\n\n"
+        f"<b>👥 ሪፈራሎች</b>: {refs_total} ጠቅላላ, {refs_paid} የተከፈሉ\n"
+        f"ተመሳሳይ ስልክ ተጠቃሚ: {multi_count}\n\n"
+        f"<b>🛡 ስጋት</b>: {risk} ({u['risk_score'] or 0})\n"
+        f"Multi-flag: {'🚨 አዎ' if u['multi_flag'] else 'አይ'}\n"
+        f"📅 {day_note}"
     )
-    if u["multi_flag"] or multi_count >= 2:
-        text += "\n\n🚨 <b>MULTI-ACCOUNT DETECTED — REJECT RECOMMENDED</b>"
     await send_admin(text, wd_kb(wid))
 
-async def send_task_admin(sid):
+async def send_submission_admin(sid):
     conn = db()
     try:
         s = conn.execute("SELECT ts.*, t.title, t.reward FROM task_submissions ts JOIN tasks t ON t.id=ts.task_id WHERE ts.id=?", (sid,)).fetchone()
         if not s: return
         u = conn.execute("SELECT * FROM users WHERE user_id=?", (s["user_id"],)).fetchone()
     finally: conn.close()
-    text = f"📋 <b>TASK SUBMISSION</b>\n\n{fmt_user(u)}\n\n📌 {html.escape(s['title'])}\n💰 {s['reward']:.2f} ETB\n\n🧾 {html.escape(s['proof_text'] or '(image)')}"
-    await send_admin(text, sub_kb(sid))
+    if not s or not u: return
+    cap = (
+        f"📋 <b>አዲስ የታስክ ማስረጃ #{sid}</b>\n\n"
+        f"{fmt_user(u)}\n\n"
+        f"📌 ታስክ: <b>{html.escape(s['title'])}</b>\n"
+        f"💰 ሽልማት: {s['reward']:.2f} ETB\n\n"
+        f"መግለጫ: {html.escape(s['proof_text'] or '—')}"
+    )
+    if s["proof_image"]:
+        await send_admin_photo(s["proof_image"], cap, sub_kb(sid))
+    else:
+        await send_admin(cap, sub_kb(sid))
 
 async def user_audit(cid, tid):
     u = get_user(tid)
-    if not u: await send(cid, "Not found"); return
+    if not u: await send(cid, "ተጠቃሚ አልተገኘም"); return
+    refs = get_all_referrals(tid)
     refs_paid = get_referral_count(tid)
-    conn = db()
-    try:
-        refs_total = conn.execute("SELECT COUNT(*) c FROM users WHERE referred_by=?", (tid,)).fetchone()["c"]
-        wds = conn.execute("SELECT id,amount,status FROM withdrawals WHERE user_id=? ORDER BY id DESC LIMIT 5", (tid,)).fetchall()
-    finally: conn.close()
-    await send(cid,
-        f"👤 <b>Audit</b>\n\n"
-        f"Name: {html.escape(u['first_name'] or '')} {html.escape(u['last_name'] or '')}\n"
+    text = (
+        f"👤 <b>ተጠቃሚ መረጃ</b>\n\n"
+        f"ስም: {html.escape(u['first_name'] or '')} {html.escape(u['last_name'] or '')}\n"
         f"@{html.escape(u['username'] or 'none')}\n"
-        f"ID: <code>{u['user_id']}</code>\n"
-        f"IP: <code>{html.escape(u['ip_hash'] or '?')}</code>\n"
-        f"Device: <code>{html.escape((u['device_hash'] or '?')[:16])}</code>\n\n"
-        f"💼 Balance: <b>{float(u['balance'] or 0):.2f}</b>\n"
-        f"🎁 Bonus: {float(u['daily_earnings'] or 0):.2f}\n"
-        f"👥 Referral: {float(u['referral_earnings'] or 0):.2f}\n"
-        f"📋 Task: {float(u['task_earnings'] or 0):.2f}\n"
-        f"📉 Withdrawn: {float(u['total_withdrawn'] or 0):.2f}\n\n"
-        f"👥 Referrals: {refs_total} ({refs_paid} paid)\n"
-        f"🚫 Multi: {'YES' if u['multi_flag'] else 'No'}\n"
-        f"🛡 Risk: {u['risk_score'] or 0} — {html.escape(u['risk_flags'] or 'none')}")
+        f"🆔 <code>{u['user_id']}</code>\n"
+        f"🌐 IP: <code>{html.escape(u['ip_hash'] or '?')}</code>\n"
+        f"📱 Device: <code>{html.escape((u['device_hash'] or '?')[:20])}</code>\n\n"
+        f"💼 ባላንስ: <b>{float(u['balance'] or 0):.2f}</b>\n"
+        f"📈 ጠቅላላ ገቢ: {float(u['total_earned'] or 0):.2f}\n"
+        f"📉 ጠቅላላ ወጪ: {float(u['total_withdrawn'] or 0):.2f}\n"
+        f"🎁 ቦነስ: {float(u['daily_earnings'] or 0):.2f}\n"
+        f"👥 ሪፈራል: {float(u['referral_earnings'] or 0):.2f}\n"
+        f"📋 ታስክ: {float(u['task_earnings'] or 0):.2f}\n\n"
+        f"👥 ሪፈራሎች: {len(refs)} ({refs_paid} የተከፈሉ)\n"
+        f"🚫 Multi-flag: {'አዎ' if u['multi_flag'] else 'አይ'}\n"
+        f"🛡 ስጋት: {u['risk_score'] or 0} — {html.escape(u['risk_flags'] or 'none')}"
+    )
+    await send(cid, text)
 
 async def admin_dash(cid):
     conn = db()
@@ -897,16 +706,301 @@ async def admin_dash(cid):
         pw = conn.execute("SELECT COUNT(*) c FROM withdrawals WHERE status='pending'").fetchone()["c"]
         pt = conn.execute("SELECT COUNT(*) c FROM task_submissions WHERE status='pending'").fetchone()["c"]
     finally: conn.close()
+    ref_rate = get_setting("referral_reward", DEFAULT_REFERRAL, kind=float)
+    day_rate = get_setting("daily_reward", DEFAULT_DAILY, kind=float)
+    min_wd = get_setting("minimum_withdrawal", DEFAULT_MIN_WITHDRAW, kind=float)
+    payment_day = is_payment_day()
     await send(cid,
-        f"🛡 <b>Mega Spark Admin</b>\n\n"
-        f"👥 Users: <b>{users}</b>  ✅ {verified}\n"
-        f"🚫 Banned: {banned}  🚨 Multi: {multi}  ⚠️ Flagged: {flagged}\n"
-        f"💼 Balances: <b>{tb:.2f} ETB</b>\n"
-        f"📈 Earned: {te:.2f}  📉 Paid: {tw:.2f}\n\n"
-        f"💸 Pending WD: <b>{pw}</b>\n📋 Pending Tasks: <b>{pt}</b>\n\n"
-        "<b>Commands</b>\n/admin /stats /checkuser ID /addbalance ID AMT\n/ban ID [reason] /unban ID\n"
-        "/setdaily /setref /setminwithdraw\n/channels /addchannel /removechannel /togglechannel /editchannel\n"
-        "/addtask /deltask /tasks /withdrawals /maintenance")
+        f"🛡 <b>Mega Spark Admin Panel</b>\n\n"
+        f"👥 ተጠቃሚዎች: <b>{users}</b>  ✅ {verified}\n"
+        f"🚫 የተከለከሉ: {banned}  🚨 Multi: {multi}  ⚠️ Flagged: {flagged}\n"
+        f"💼 ጠቅላላ ባላንስ: <b>{tb:.2f} ETB</b>\n"
+        f"📈 ጠቅላላ ገቢ: {te:.2f}  📉 ጠቅላላ ወጪ: {tw:.2f}\n\n"
+        f"💸 በመጠባበቅ ላይ ያለ ዊዝድሮ: <b>{pw}</b>\n"
+        f"📋 በመጠባበቅ ላይ ያለ ታስክ: <b>{pt}</b>\n\n"
+        f"<b>⚙️ የአሁኑ ቅንብሮች</b>\n"
+        f"👥 ሪፈራል: <b>{ref_rate:.2f} ETB</b>\n"
+        f"🎁 ዴይሊ: <b>{day_rate:.2f} ETB</b>\n"
+        f"💸 ሚኒማም ዊዝድሮ: <b>{min_wd:.2f} ETB</b>\n"
+        f"📅 ዛሬ: {'✅ የክፍያ ቀን' if payment_day else '🛑 እሁድ'}\n\n"
+        "<b>📋 Commands</b>\n"
+        "/admin — ዳሽቦርድ\n"
+        "/stats — ስታቲስቲክስ\n"
+        "/checkuser ID — ተጠቃሚ መመልከት\n"
+        "/addbalance ID AMT — ባላንስ መጨመር\n"
+        "/testbalance ID AMT — የቴስት ባላንስ\n"
+        "/ban ID [reason] — መከልከል\n"
+        "/unban ID — መክፈት\n"
+        "/setref AMT — ሪፈራል ዋጋ\n"
+        "/setdaily AMT — ዴይሊ\n"
+        "/setminwithdraw AMT — ሚኒማም\n"
+        "/channels — ቻናሎች\n"
+        "/addchannel @u | Name | URL\n"
+        "/removechannel @u\n"
+        "/togglechannel @u\n"
+        "/editchannel @old | @new | Name | URL\n"
+        "/addtask Title | Desc | Reward | URL\n"
+        "/deltask ID\n"
+        "/tasks — ሁሉም ታስኮች\n"
+        "/withdrawals — ዊዝድሮዎች\n"
+        "/maintenance — የጥገና ሁኔታ")
+
+# ═══ BOT HANDLERS ═══
+async def handle_message(msg):
+    chat = msg.get("chat", {}); user = msg.get("from", {})
+    cid = chat.get("id"); uid = user.get("id")
+    if not cid or not uid: return
+    text = (msg.get("text") or "").strip()
+    caption = (msg.get("caption") or "").strip()
+    photo = msg.get("photo") or []
+
+    ref = parse_ref(text) if text.startswith("/start") else None
+    ensure_user(uid, user.get("username",""), user.get("first_name",""), user.get("last_name",""), ref)
+
+    if is_banned(uid) and not is_admin(uid):
+        await send(cid, f"🚫 አካውንትዎ ተከልክሏል።\n📞 ድጋፍ: {SUPPORT_USERNAME}"); return
+
+    if photo and caption:
+        await handle_photo_proof(uid, cid, caption, photo[-1]["file_id"]); return
+    if photo and not caption:
+        await send(cid, "⚠️ <b>መግለጫ ያስፈልጋል</b>\n\nScreenshot ከታስክ ኮድ ጋር ይላኩ።\n\nምሳሌ: <code>#T5</code>"); return
+
+    if text.startswith("/start"):
+        await send(cid, WELCOME_MSG); return
+
+    if text == "/id":
+        await send(cid, f"🆔 <code>{uid}</code>"); return
+
+    if text == "/help":
+        await send(cid,
+            "⚡ <b>Mega Spark እርዳታ</b>\n\n"
+            "1. Menu ቁልፍ ተጭነው ይክፈቱ\n"
+            "2. Captcha ያረጋግጡ\n"
+            "3. ቻናሎቹን ይቀላቀሉ\n"
+            "4. ያግኙ\n"
+            "5. ከ 30 ETB በላይ ሲሆን ያውጡ\n\n"
+            "⚠️ ብዙ አካውንት = ክፍያ ውድቅ\n\n"
+            f"📞 ድጋፍ: {SUPPORT_USERNAME}")
+        return
+
+    # ─── ADMIN COMMANDS ───
+    if not is_admin(uid):
+        await send(cid, "ጀምር ለማድረግ /start ይላኩ ወይም Menu ቁልፍ ይጫኑ 🚀")
+        return
+
+    if text.startswith("/admin") or text.startswith("/stats"):
+        await admin_dash(cid); return
+
+    if text.startswith("/checkuser"):
+        p = text.split()
+        if len(p) != 2 or not p[1].isdigit(): await send(cid, "አጠቃቀም: /checkuser ID"); return
+        await user_audit(cid, int(p[1])); return
+
+    if text.startswith("/addbalance"):
+        p = text.split()
+        if len(p) != 3: await send(cid, "አጠቃቀም: /addbalance ID AMT"); return
+        try: tid = int(p[1]); amt = float(p[2])
+        except: await send(cid, "ልክ ያልሆነ ቁጥር"); return
+        if not get_user(tid): await send(cid, "ተጠቃሚ አልተገኘም"); return
+        if amt > 0: credit(tid, amt, "admin", f"Admin {uid}", admin_id=uid)
+        else: debit(tid, abs(amt), "admin", f"Admin {uid}", admin_id=uid)
+        log_admin(uid, "addbalance", tid, "", amt)
+        await send(cid, f"✅ {amt:+.2f} ETB ለ {tid}") ; return
+
+    if text.startswith("/testbalance"):
+        p = text.split()
+        if len(p) != 3: await send(cid, "አጠቃቀም: /testbalance ID AMT"); return
+        try: tid = int(p[1]); amt = float(p[2])
+        except: await send(cid, "ልክ ያልሆነ ቁጥር"); return
+        if not get_user(tid): await send(cid, "ተጠቃሚ አልተገኘም"); return
+        conn = db()
+        try:
+            conn.execute("UPDATE users SET is_test=1 WHERE user_id=?", (tid,)); conn.commit()
+        finally: conn.close()
+        if amt > 0: credit(tid, amt, "admin", f"TEST balance by {uid}", admin_id=uid)
+        elif amt < 0: debit(tid, abs(amt), "admin", f"TEST deduct by {uid}", admin_id=uid)
+        log_admin(uid, "testbalance", tid, "", amt)
+        await send(cid, f"🧪 የቴስት ባላንስ {amt:+.2f} ETB ለ {tid}") ; return
+
+    if text.startswith("/ban"):
+        p = text.split()
+        if len(p) < 2 or not p[1].isdigit(): await send(cid, "አጠቃቀም: /ban ID [reason]"); return
+        tid = int(p[1]); reason = " ".join(p[2:]) or "Policy"
+        conn = db()
+        try:
+            conn.execute("UPDATE users SET banned=1, ban_reason=?, updated_at=? WHERE user_id=?", (reason, int(time.time()), tid)); conn.commit()
+        finally: conn.close()
+        log_admin(uid, "ban", tid, "", reason)
+        await send(cid, f"🚫 {tid} ተከልክሏል")
+        try: await send(tid, f"🚫 አካውንትዎ ተከልክሏል\nምክንያት: {reason}")
+        except: pass
+        return
+
+    if text.startswith("/unban"):
+        p = text.split()
+        if len(p) != 2 or not p[1].isdigit(): await send(cid, "አጠቃቀም: /unban ID"); return
+        conn = db()
+        try:
+            conn.execute("UPDATE users SET banned=0, ban_reason='', updated_at=? WHERE user_id=?", (int(time.time()), int(p[1]))); conn.commit()
+        finally: conn.close()
+        log_admin(uid, "unban", p[1])
+        await send(cid, "✅ ተከፍቷል"); return
+
+    if text.startswith("/setref"):
+        p = text.split()
+        if len(p) != 2: await send(cid, "አጠቃቀም: /setref AMOUNT"); return
+        try: v = float(p[1])
+        except: await send(cid, "ልክ ያልሆነ ቁጥር"); return
+        old = get_setting("referral_reward", DEFAULT_REFERRAL, kind=float)
+        set_setting("referral_reward", v); log_admin(uid, "setref", "", old, v)
+        await send(cid, f"✅ ሪፈራል ዋጋ: <b>{old:.2f}</b> → <b>{v:.2f} ETB</b>\n\n<b>ማስታወሻ:</b> አሁን የሚመጡ አዲስ ሪፈራሎች በአዲሱ ዋጋ ይከፈላሉ።"); return
+
+    if text.startswith("/setdaily"):
+        p = text.split()
+        if len(p) != 2: await send(cid, "አጠቃቀም: /setdaily AMOUNT"); return
+        try: v = float(p[1])
+        except: await send(cid, "ልክ ያልሆነ ቁጥር"); return
+        old = get_setting("daily_reward", DEFAULT_DAILY, kind=float)
+        set_setting("daily_reward", v); log_admin(uid, "setdaily", "", old, v)
+        await send(cid, f"✅ ዴይሊ: <b>{old:.2f}</b> → <b>{v:.2f} ETB</b>"); return
+
+    if text.startswith("/setminwithdraw"):
+        p = text.split()
+        if len(p) != 2: await send(cid, "አጠቃቀም: /setminwithdraw AMOUNT"); return
+        try: v = float(p[1])
+        except: await send(cid, "ልክ ያልሆነ ቁጥር"); return
+        old = get_setting("minimum_withdrawal", DEFAULT_MIN_WITHDRAW, kind=float)
+        set_setting("minimum_withdrawal", v); log_admin(uid, "setminwithdraw", "", old, v)
+        await send(cid, f"✅ ሚኒማም ዊዝድሮ: <b>{old:.2f}</b> → <b>{v:.2f} ETB</b>"); return
+
+    if text == "/channels":
+        ch = get_channels(active_only=False)
+        lines = ["📢 <b>የግዴታ ቻናሎች</b>\n"]
+        for c in ch:
+            st = "✅" if c["active"] else "❌"
+            lines.append(f"{st} <b>{html.escape(c['name'])}</b> — {html.escape(c['username'])}")
+        lines.append("\n/addchannel @u | Name | URL\n/removechannel @u\n/togglechannel @u\n/editchannel @old | @new | Name | URL")
+        await send(cid, "\n".join(lines)); return
+
+    if text.startswith("/addchannel"):
+        parts = [x.strip() for x in text.split("|", 2)]
+        if len(parts) != 3: await send(cid, "አጠቃቀም: /addchannel @u | Name | URL"); return
+        first = parts[0].replace("/addchannel","").strip()
+        if not first.startswith("@"): first = "@"+first
+        conn = db()
+        try:
+            mx = conn.execute("SELECT COALESCE(MAX(sort_order),0) m FROM required_channels").fetchone()["m"]
+            conn.execute("INSERT INTO required_channels(username,name,url,active,sort_order,created_at,updated_at) VALUES(?,?,?,?,?,?,?)",
+                         (first, parts[1], parts[2], 1, int(mx)+1, int(time.time()), int(time.time())))
+            conn.commit()
+        except sqlite3.IntegrityError:
+            await send(cid, "❌ ቀድሞ አለ"); return
+        finally: conn.close()
+        await send(cid, f"✅ ተጨምሯል: {first}"); return
+
+    if text.startswith("/removechannel"):
+        p = text.split()
+        if len(p) != 2: await send(cid, "አጠቃቀም: /removechannel @u"); return
+        u = p[1] if p[1].startswith("@") else "@"+p[1]
+        conn = db()
+        try:
+            cur = conn.execute("DELETE FROM required_channels WHERE username=?", (u,)); conn.commit()
+        finally: conn.close()
+        await send(cid, "✅ ተሰርዟል" if cur.rowcount else "❌ አልተገኘም"); return
+
+    if text.startswith("/togglechannel"):
+        p = text.split()
+        if len(p) != 2: await send(cid, "አጠቃቀም: /togglechannel @u"); return
+        u = p[1] if p[1].startswith("@") else "@"+p[1]
+        conn = db()
+        try:
+            r = conn.execute("SELECT active FROM required_channels WHERE username=?", (u,)).fetchone()
+            if not r: await send(cid, "❌ አልተገኘም"); return
+            n = 0 if r["active"] else 1
+            conn.execute("UPDATE required_channels SET active=?, updated_at=? WHERE username=?", (n, int(time.time()), u)); conn.commit()
+        finally: conn.close()
+        await send(cid, f"✅ አሁን {'ንቁ' if n else 'ተዘግቷል'}"); return
+
+    if text.startswith("/editchannel"):
+        parts = [x.strip() for x in text.split("|", 3)]
+        if len(parts) != 4: await send(cid, "አጠቃቀም: /editchannel @old | @new | Name | URL"); return
+        old = parts[0].replace("/editchannel","").strip()
+        if not old.startswith("@"): old = "@"+old
+        new, name, url = parts[1], parts[2], parts[3]
+        if not new.startswith("@"): new = "@"+new
+        conn = db()
+        try:
+            cur = conn.execute("UPDATE required_channels SET username=?, name=?, url=?, updated_at=? WHERE username=?",
+                               (new, name, url, int(time.time()), old)); conn.commit()
+        finally: conn.close()
+        await send(cid, "✅ ተስተካክሏል" if cur.rowcount else "❌ አልተገኘም"); return
+
+    if text.startswith("/addtask"):
+        parts = text.replace("/addtask","",1).strip().split("|")
+        if len(parts) != 4: await send(cid, "አጠቃቀም: /addtask Title | Desc | Reward | URL"); return
+        try: rw = float(parts[2].strip())
+        except: await send(cid, "ልክ ያልሆነ ሽልማት"); return
+        conn = db()
+        try:
+            cur = conn.execute("INSERT INTO tasks(title,description,reward,url,proof_type,active,created_at,created_by) VALUES(?,?,?,?,?,1,?,?)",
+                               (parts[0].strip(), parts[1].strip(), rw, parts[3].strip(), "photo", int(time.time()), uid))
+            conn.commit(); tid = cur.lastrowid
+        finally: conn.close()
+        log_admin(uid, "addtask", tid)
+        await send(cid, f"✅ ታስክ #{tid} ተፈጥሯል\n\nተጠቃሚዎች screenshot ከ <code>#T{tid}</code> ጋር ይልካሉ"); return
+
+    if text.startswith("/deltask"):
+        p = text.split()
+        if len(p) != 2 or not p[1].isdigit(): await send(cid, "አጠቃቀም: /deltask ID"); return
+        conn = db()
+        try:
+            conn.execute("UPDATE tasks SET active=0 WHERE id=?", (int(p[1]),)); conn.commit()
+        finally: conn.close()
+        await send(cid, "✅ ጠፍቷል"); return
+
+    if text == "/tasks":
+        ts = get_tasks(False)
+        if not ts: await send(cid, "ታስኮች የሉም"); return
+        lines = ["📋 <b>ታስኮች</b>"]
+        for t in ts:
+            st = "✅" if t["active"] else "❌"
+            lines.append(f"{st} #{t['id']} {html.escape(t['title'])} — {t['reward']:.2f}")
+        await send(cid, "\n".join(lines)); return
+
+    if text == "/withdrawals":
+        conn = db()
+        try:
+            wds = conn.execute("SELECT id FROM withdrawals WHERE status='pending' ORDER BY id ASC LIMIT 10").fetchall()
+        finally: conn.close()
+        if not wds: await send(cid, "በመጠባበቅ ላይ ያለ ዊዝድሮ የለም"); return
+        for w in wds: await send_withdrawal_admin(w["id"])
+        return
+
+    if text == "/maintenance":
+        cur = get_setting("maintenance_mode", "0", kind=str) == "1"
+        set_setting("maintenance_mode", "0" if cur else "1")
+        await send(cid, f"✅ የጥገና ሁኔታ: {'ጠፍቷል' if cur else 'ተብርቷል'}"); return
+
+    await send(cid, "ያልታወቀ ትዕዛዝ። /admin ይላኩ")
+
+async def handle_photo_proof(uid, cid, caption, photo_id):
+    m = re.search(r"#T(\d+)", caption)
+    if not m:
+        await send(cid, "⚠️ <b>የታስክ ኮድ የለም</b>\n\nመግለጫው የታስክ ID መያዝ አለበት።\nምሳሌ: <code>#T5</code>"); return
+    tid = int(m.group(1))
+    conn = db()
+    try:
+        t = conn.execute("SELECT * FROM tasks WHERE id=? AND active=1", (tid,)).fetchone()
+    finally: conn.close()
+    if not t: await send(cid, "❌ ታስክ አልተገኘም"); return
+    u = get_user(uid)
+    if not u or not u["verified"]:
+        await send(cid, "⚠️ መጀመሪያ በአፑ ውስጥ ያረጋግጡ"); return
+    ok, res = submit_task(uid, tid, proof_text=caption[:500], proof_image=photo_id)
+    if not ok:
+        await send(cid, f"❌ {res}"); return
+    await send(cid, f"✅ <b>ማስረጃ ተልኳል!</b>\n\nታስክ: {html.escape(t['title'])}\nሽልማት: {t['reward']:.2f} ETB\n\nAdmin ከገመገመ በኋላ ይነገርዎታል።")
+    await send_submission_admin(res["submission_id"])
 
 async def edit_cb(q, text, kb=None):
     d = {"chat_id": q["message"]["chat"]["id"], "message_id": q["message"]["message_id"], "text": text, "parse_mode": "HTML"}
@@ -919,7 +1013,7 @@ async def answer_cb(cid, text="", alert=False):
 async def handle_callback(q):
     data = q.get("data", "")
     aid = int(q["from"]["id"])
-    if not is_admin(aid): await answer_cb(q["id"], "Not auth", True); return
+    if not is_admin(aid): await answer_cb(q["id"], "ፍቃድ የለህም", True); return
 
     if data.startswith("wdrefs:"):
         _, wid_s, page_s = data.split(":", 2)
@@ -927,26 +1021,26 @@ async def handle_callback(q):
         conn = db()
         try:
             w = conn.execute("SELECT user_id FROM withdrawals WHERE id=?", (wid,)).fetchone()
-            if not w: await answer_cb(q["id"], "Not found", True); return
-            refs = conn.execute("SELECT user_id, username, first_name, referral_paid, device_hash FROM users WHERE referred_by=? ORDER BY user_id DESC",
+            if not w: await answer_cb(q["id"], "አልተገኘም", True); return
+            refs = conn.execute("SELECT user_id, username, first_name, last_name, referral_paid, created_at FROM users WHERE referred_by=? ORDER BY user_id DESC",
                                 (w["user_id"],)).fetchall()
         finally: conn.close()
         per = 40; start = page*per; chunk = refs[start:start+per]
         total_pages = max(1, (len(refs)+per-1)//per)
-        if not chunk: await answer_cb(q["id"], "None"); return
-        lines = [f"👥 <b>Referrals — Page {page+1}/{total_pages}</b> ({len(refs)} total)\n"]
+        if not chunk: await answer_cb(q["id"], "ሪፈራሎች የሉም"); return
+        lines = [f"👥 <b>ሪፈራሎች — ገጽ {page+1}/{total_pages}</b> ({len(refs)} ጠቅላላ)\n"]
         for r in chunk:
             pd = "💰" if r["referral_paid"] else "⏳"
-            nm = html.escape(r["first_name"] or "—")
+            nm = html.escape(((r["first_name"] or "") + " " + (r["last_name"] or "")).strip() or "—")
             un = f"@{html.escape(r['username'])}" if r["username"] else "—"
-            lines.append(f"{pd} {nm} {un}\n<code>{r['user_id']}</code>")
-        kb = None
+            dt = datetime.utcfromtimestamp(int(r["created_at"])).strftime("%m-%d %H:%M")
+            lines.append(f"{pd} {nm} {un}\n<code>{r['user_id']}</code> • {dt}")
         nav = []
-        if page > 0: nav.append({"text": "⬅️ Prev", "callback_data": f"wdrefs:{wid}:{page-1}"})
-        if page+1 < total_pages: nav.append({"text": "Next ➡️", "callback_data": f"wdrefs:{wid}:{page+1}"})
-        if nav: kb = {"inline_keyboard": [nav]}
+        if page > 0: nav.append({"text": "⬅️ ቀዳሚ", "callback_data": f"wdrefs:{wid}:{page-1}"})
+        if page+1 < total_pages: nav.append({"text": "ቀጣይ ➡️", "callback_data": f"wdrefs:{wid}:{page+1}"})
+        kb = {"inline_keyboard": [nav]} if nav else None
         await send(aid, "\n".join(lines), kb)
-        await answer_cb(q["id"], f"Page {page+1}"); return
+        await answer_cb(q["id"], f"ገጽ {page+1}"); return
 
     if data.startswith("wdaudit:"):
         wid = int(data.split(":")[1])
@@ -955,32 +1049,33 @@ async def handle_callback(q):
             w = conn.execute("SELECT user_id FROM withdrawals WHERE id=?", (wid,)).fetchone()
         finally: conn.close()
         if w: await user_audit(aid, int(w["user_id"]))
-        await answer_cb(q["id"], "Sent"); return
+        await answer_cb(q["id"], "ተልኳል"); return
 
     if data.startswith(("wdok:","wdno:","wdban:")):
         action, wid_s = data.split(":", 1); wid = int(wid_s)
         if action == "wdok":
             ok, w = approve_withdrawal(wid, aid)
             if not ok: await answer_cb(q["id"], str(w), True); return
-            await answer_cb(q["id"], "✅ Approved")
-            await edit_cb(q, f"✅ <b>Withdrawal #{wid}</b> — Approved")
-            try: await send(int(w["user_id"]), f"✅ <b>Withdrawal Approved</b>\n\n{w['amount']:.2f} ETB\n{html.escape(w['wallet_type'])}: <code>{html.escape(w['wallet_number'])}</code>")
+            await answer_cb(q["id"], "✅ ጸድቋል")
+            await edit_cb(q, f"✅ <b>ዊዝድሮ #{wid}</b> — ጸድቋል")
+            try: await send(int(w["user_id"]), f"✅ <b>ዊዝድሮ ጸድቋል</b>\n\n{w['amount']:.2f} ETB\n{html.escape(w['wallet_type'])}: <code>{html.escape(w['wallet_number'])}</code>")
             except: pass
         elif action == "wdno":
-            ok, w = reject_withdrawal(wid, aid, "Rejected")
+            ok, w = reject_withdrawal(wid, aid, "Rejected by admin")
             if not ok: await answer_cb(q["id"], str(w), True); return
-            await answer_cb(q["id"], "❌ Rejected")
-            await edit_cb(q, f"❌ <b>Withdrawal #{wid}</b> — Rejected & refunded")
-            try: await send(int(w["user_id"]), f"❌ <b>Withdrawal Rejected</b>\nRefunded: {w['amount']:.2f} ETB")
+            await answer_cb(q["id"], "❌ ውድቅ ሆኗል")
+            await edit_cb(q, f"❌ <b>ዊዝድሮ #{wid}</b> — ውድቅ ሆኖ ተመልሷል")
+            try: await send(int(w["user_id"]), f"❌ <b>ዊዝድሮ ውድቅ ሆኗል</b>\nየተመለሰ: {w['amount']:.2f} ETB")
             except: pass
         else:
             conn = db()
             try:
                 w = conn.execute("SELECT user_id FROM withdrawals WHERE id=?", (wid,)).fetchone()
-                if w: conn.execute("UPDATE users SET banned=1, ban_reason='Withdrawal fraud', updated_at=? WHERE user_id=?", (int(time.time()), w["user_id"])); conn.commit()
+                if w:
+                    conn.execute("UPDATE users SET banned=1, ban_reason='Withdrawal fraud', updated_at=? WHERE user_id=?", (int(time.time()), w["user_id"])); conn.commit()
             finally: conn.close()
-            await answer_cb(q["id"], "🚫 Banned")
-            await edit_cb(q, f"🚫 <b>Withdrawal #{wid}</b> — User banned")
+            await answer_cb(q["id"], "🚫 ተከልክሏል")
+            await edit_cb(q, f"🚫 <b>ዊዝድሮ #{wid}</b> — ተጠቃሚ ተከልክሏል")
         return
 
     if data.startswith(("tskok:","tskno:")):
@@ -989,16 +1084,17 @@ async def handle_callback(q):
             ok, s = approve_task_submission(sid, aid)
             if not ok: await answer_cb(q["id"], str(s), True); return
             await answer_cb(q["id"], "✅")
-            await edit_cb(q, f"✅ <b>Task #{sid}</b> — Approved")
-            try: await send(int(s["user_id"]), f"✅ <b>Task Approved</b>\n{html.escape(s['title'])}\n+{s['reward']:.2f} ETB")
+            await edit_cb(q, f"✅ <b>ታስክ #{sid}</b> — ጸድቋል")
+            try: await send(int(s["user_id"]), f"✅ <b>ታስክ ጸድቋል</b>\n{html.escape(s['title'])}\n+{s['reward']:.2f} ETB")
             except: pass
         else:
             reject_task_submission(sid, aid, "Rejected")
             await answer_cb(q["id"], "❌")
-            await edit_cb(q, f"❌ <b>Task #{sid}</b> — Rejected")
+            await edit_cb(q, f"❌ <b>ታስክ #{sid}</b> — ውድቅ")
         return
     await answer_cb(q["id"])
 
+# ═══ FASTAPI ═══
 app = FastAPI(title="Mega Spark")
 init_db()
 
@@ -1036,13 +1132,10 @@ async def require_user(request: Request, x_device_id: str = Header(default="", a
     try:
         cur = conn.execute("SELECT device_hash FROM users WHERE user_id=?", (uid,)).fetchone()
         if cur and not cur["device_hash"] and dev_h:
-            conn.execute("UPDATE users SET device_hash=?, ip_hash=? WHERE user_id=?", (dev_h, ip_h, uid))
-            conn.commit()
+            conn.execute("UPDATE users SET device_hash=?, ip_hash=? WHERE user_id=?", (dev_h, ip_h, uid)); conn.commit()
         elif cur and dev_h:
-            if cur["device_hash"] and cur["device_hash"] != dev_h:
-                add_risk(uid, 20, "device_change", "Device changed")
-            conn.execute("UPDATE users SET device_hash=?, ip_hash=?, last_active=? WHERE user_id=?", (dev_h, ip_h, int(time.time()), uid))
-            conn.commit()
+            conn.execute("UPDATE users SET device_hash=?, ip_hash=?, last_active=? WHERE user_id=?",
+                         (dev_h, ip_h, int(time.time()), uid)); conn.commit()
     finally: conn.close()
     return u, uid, None
 
@@ -1059,30 +1152,19 @@ async def api_me(request: Request, x_device_id: str = Header(default="", alias="
     if err: return err
     row = get_user(uid)
     return {
-        "user_id": uid,
-        "username": row["username"] or "",
-        "first_name": row["first_name"] or "",
-        "last_name": row["last_name"] or "",
-        "balance": _r2(row["balance"]),
-        "total_earned": _r2(row["total_earned"]),
-        "total_withdrawn": _r2(row["total_withdrawn"]),
-        "referral_earnings": _r2(row["referral_earnings"]),
-        "daily_earnings": _r2(row["daily_earnings"]),
-        "task_earnings": _r2(row["task_earnings"]),
-        "verified": bool(row["verified"]),
-        "captcha_passed": bool(row["captcha_passed"]),
-        "banned": bool(row["banned"]),
+        "user_id": uid, "username": row["username"] or "", "first_name": row["first_name"] or "", "last_name": row["last_name"] or "",
+        "balance": _r2(row["balance"]), "total_earned": _r2(row["total_earned"]), "total_withdrawn": _r2(row["total_withdrawn"]),
+        "referral_earnings": _r2(row["referral_earnings"]), "daily_earnings": _r2(row["daily_earnings"]), "task_earnings": _r2(row["task_earnings"]),
+        "verified": bool(row["verified"]), "captcha_passed": bool(row["captcha_passed"]), "banned": bool(row["banned"]),
         "referral_count": get_referral_count(uid),
-        "wallet_type": row["wallet_type"] or "",
-        "wallet_number": row["wallet_number"] or "",
+        "wallet_type": row["wallet_type"] or "", "wallet_number": row["wallet_number"] or "",
         "wallet_suspicious": bool(row["wallet_suspicious"]),
-        "multi_flag": bool(row["multi_flag"]),
         "settings": {
             "daily_reward": get_setting("daily_reward", DEFAULT_DAILY, kind=float),
             "referral_reward": get_setting("referral_reward", DEFAULT_REFERRAL, kind=float),
             "minimum_withdrawal": get_setting("minimum_withdrawal", DEFAULT_MIN_WITHDRAW, kind=float),
-            "bot_username": BOT_USERNAME,
-            "support_username": SUPPORT_USERNAME,
+            "bot_username": BOT_USERNAME, "support_username": SUPPORT_USERNAME,
+            "payment_day": is_payment_day(),
         },
         "daily_status": daily_status(uid),
         "services": [{"icon":s[0],"title":s[1],"desc":s[2]} for s in SERVICES],
@@ -1105,10 +1187,9 @@ async def api_captcha(request: Request):
 async def api_captcha_verify(request: Request, payload: dict = Body(...)):
     u, uid, err = await require_user(request)
     if err: return err
-    ok, msg = verify_captcha((payload.get("token") or "").strip(), str(payload.get("answer") or "").strip())
+    ok, msg, new_t, new_q = verify_captcha((payload.get("token") or "").strip(), str(payload.get("answer") or "").strip())
     if not ok:
-        nt, nq = make_captcha(uid)
-        return JSONResponse({"ok":False,"error":msg,"token":nt,"question":nq}, status_code=400)
+        return JSONResponse({"ok":False,"error":msg,"token":new_t,"question":new_q}, status_code=400)
     return {"ok": True}
 
 @app.post("/api/verify")
@@ -1127,12 +1208,10 @@ async def api_verify(request: Request):
     if not was:
         reward, block = pay_referral_if_eligible(uid)
         if block and block.get("multi"):
-            try: await send_admin(f"🚨 <b>MULTI-ACCOUNT DETECTED</b>\n\nUser <code>{uid}</code>\nReferrer: <code>{block['referrer']}</code>\nReason: {block['reason']}\n\nReferral reward <b>BLOCKED</b>.")
+            try: await send_admin(f"🚨 <b>ማስጠንቀቂያ — Multi-Account</b>\n\nተጠቃሚ: <code>{uid}</code>\nReferrer: <code>{block['referrer']}</code>\nምክንያት: {block['reason']}\n\nሪፈራል <b>ተከፍሏል</b> — ዊዝድሮ ጊዜ ያጣሩ።")
             except: pass
-            try: await send(uid, "⚠️ <b>Multi-account detected</b>\n\nYour account shares device/IP with the referrer.\nReferral reward was NOT paid.\nWithdrawals will require manual review.")
-            except: pass
-        elif reward:
-            try: await send(int(get_user(uid)["referred_by"]), f"👥 <b>Referral Reward</b>\n\n+{reward:.2f} ETB credited!")
+        if reward:
+            try: await send(int(get_user(uid)["referred_by"]), f"👥 <b>የሪፈራል ሽልማት</b>\n\n+{reward:.2f} ETB ተከፍሏል!")
             except: pass
     return {"ok":True,"verified":True,"channels":results}
 
@@ -1142,25 +1221,17 @@ async def api_tasks(request: Request):
     if err: return err
     return {"tasks":[{"id":t["id"],"title":t["title"],"description":t["description"] or "","reward":_r2(t["reward"]),"url":t["url"] or "","status":(get_user_task_status(uid,t["id"])["status"] if get_user_task_status(uid,t["id"]) else None)} for t in get_tasks(active_only=True)]}
 
-@app.post("/api/tasks/{task_id}/submit")
-async def api_submit(task_id: int, request: Request, payload: dict = Body(...)):
-    u, uid, err = await require_user(request)
-    if err: return err
-    row = get_user(uid)
-    if not row["verified"]: return JSONResponse({"ok":False,"error":"not_verified"}, status_code=400)
-    ok, res = submit_task(uid, task_id, (payload.get("proof_text") or "").strip(), (payload.get("proof_image") or "").strip())
-    if not ok: return JSONResponse({"ok":False,"error":res}, status_code=400)
-    try: await send_task_admin(res["submission_id"])
-    except: pass
-    return {"ok":True,"submission_id":res["submission_id"]}
-
 @app.get("/api/referral")
 async def api_ref(request: Request):
     u, uid, err = await require_user(request)
     if err: return err
-    refs = get_all_referrals(uid)
-    return {"link":f"https://t.me/{BOT_USERNAME}?start=ref_{uid}","count":get_referral_count(uid),"total":len(refs),"reward":get_setting("referral_reward",DEFAULT_REFERRAL,kind=float),
-            "referrals":[{"user_id":r["user_id"],"name":(r["first_name"] or "")+" "+(r["last_name"] or "") or r["username"] or str(r["user_id"]),"username":r["username"] or "","paid":bool(r["referral_paid"])} for r in refs[:200]]}
+    total_count = int(db().execute("SELECT COUNT(*) c FROM users WHERE referred_by=?", (uid,)).fetchone()["c"]) if True else 0
+    conn = db()
+    try:
+        total_count = int(conn.execute("SELECT COUNT(*) c FROM users WHERE referred_by=?", (uid,)).fetchone()["c"])
+    finally: conn.close()
+    return {"link":f"https://t.me/{BOT_USERNAME}?start=ref_{uid}","count":get_referral_count(uid),"total":total_count,
+            "reward":get_setting("referral_reward",DEFAULT_REFERRAL,kind=float)}
 
 @app.get("/api/wallet")
 async def api_wallet_get(request: Request):
@@ -1197,6 +1268,7 @@ async def api_withdraw(request: Request, payload: dict = Body(...)):
     if err: return err
     row = get_user(uid)
     if not row["verified"]: return JSONResponse({"ok":False,"error":"not_verified"}, status_code=400)
+    if not is_payment_day(): return JSONResponse({"ok":False,"error":"sunday"}, status_code=400)
     ok, res = create_withdrawal(uid, float(payload.get("amount") or 0))
     if not ok: return JSONResponse({"ok":False,"error":res}, status_code=400)
     try: await send_withdrawal_admin(res["withdrawal_id"])
@@ -1237,9 +1309,7 @@ async def on_startup():
         r = await tg("setWebhook", p)
         print("setWebhook:", r)
 
-# ═══════════════════════════════════════════════════════════════
-# MINI APP UI
-# ═══════════════════════════════════════════════════════════════
+# ═══ MINI APP HTML ═══
 MINI_APP_HTML = r"""<!doctype html>
 <html lang="en">
 <head>
@@ -1252,7 +1322,8 @@ MINI_APP_HTML = r"""<!doctype html>
 :root{--bg:#050b18;--panel:#0b1830;--panel2:#0e1e3c;--line:rgba(80,150,255,.16);--text:#f5f9ff;--muted:#8ba0be;--blue:#2ea8ff;--gold:#ffc63f;--green:#34e6a4;--red:#ff6178;--violet:#7c68ff;--r:20px;--rs:14px}
 *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
 html,body{margin:0;background:var(--bg);color:var(--text);font-family:Inter,-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;overflow-x:hidden}
-body{min-height:100vh;padding-bottom:90px}
+body{min-height:100vh}
+body.app-mode{padding-bottom:90px}
 a{color:var(--blue);text-decoration:none}
 button{font-family:inherit;cursor:pointer;border:0;outline:0;color:inherit}
 .hidden{display:none!important}
@@ -1263,9 +1334,9 @@ button{font-family:inherit;cursor:pointer;border:0;outline:0;color:inherit}
 .balance-chip{margin-left:auto;padding:8px 12px;border-radius:999px;background:linear-gradient(135deg,rgba(46,168,255,.16),rgba(124,104,255,.16));border:1px solid var(--line);font-weight:700;font-size:13px;display:flex;align-items:center;gap:6px}
 .balance-chip .amt{color:var(--gold)}
 .wrap{padding:16px 16px 8px;max-width:640px;margin:0 auto}
-.screen{display:none;animation:fade .25s ease}
+.screen{display:none;animation:fade .3s ease}
 .screen.active{display:block}
-@keyframes fade{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
+@keyframes fade{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
 .card{background:linear-gradient(180deg,var(--panel),var(--panel2));border:1px solid var(--line);border-radius:var(--r);padding:16px;margin-bottom:14px}
 .hero{background:radial-gradient(120% 90% at 100% 0%,rgba(46,168,255,.22),transparent 55%),radial-gradient(90% 80% at 0% 100%,rgba(124,104,255,.22),transparent 55%),linear-gradient(180deg,#0b1830,#0a1428);border:1px solid rgba(80,150,255,.22)}
 .hero .label{color:var(--muted);font-size:12px;letter-spacing:.6px;text-transform:uppercase;font-weight:600}
@@ -1315,10 +1386,31 @@ button{font-family:inherit;cursor:pointer;border:0;outline:0;color:inherit}
 .badge.approved{background:rgba(52,230,164,.16);color:var(--green);border:1px solid rgba(52,230,164,.32)}
 .badge.rejected{background:rgba(255,97,120,.16);color:var(--red);border:1px solid rgba(255,97,120,.32)}
 .warn{background:linear-gradient(135deg,rgba(255,97,120,.15),rgba(255,60,100,.1));border:1px solid rgba(255,97,120,.35);border-radius:14px;padding:12px;font-size:12px;color:#ffd4dc;margin-bottom:12px;line-height:1.5}
-.nav{position:fixed;left:0;right:0;bottom:0;z-index:30;display:grid;grid-template-columns:repeat(4,1fr);padding:8px 8px calc(8px + env(safe-area-inset-bottom));background:linear-gradient(180deg,rgba(5,11,24,.86),rgba(5,11,24,.98));backdrop-filter:blur(18px);border-top:1px solid var(--line)}
+.nav{position:fixed;left:0;right:0;bottom:0;z-index:30;display:none;grid-template-columns:repeat(4,1fr);padding:8px 8px calc(8px + env(safe-area-inset-bottom));background:linear-gradient(180deg,rgba(5,11,24,.86),rgba(5,11,24,.98));backdrop-filter:blur(18px);border-top:1px solid var(--line)}
+body.app-mode .nav{display:grid}
 .nav button{background:none;display:flex;flex-direction:column;align-items:center;gap:3px;padding:8px 4px;color:var(--muted);font-size:10px;font-weight:700}
 .nav button .ni{font-size:20px}
 .nav button.active{color:var(--blue)}
+.gate{position:fixed;inset:0;background:var(--bg);z-index:100;display:none;overflow-y:auto;padding:24px 18px}
+.gate.active{display:block}
+.gate-inner{max-width:480px;margin:0 auto;padding-top:30px;text-align:center}
+.gate-logo{font-size:64px;line-height:1;margin-bottom:12px;filter:drop-shadow(0 8px 24px rgba(46,168,255,.6))}
+.gate-title{font-size:24px;font-weight:800;letter-spacing:-.5px;margin:0 0 6px}
+.gate-sub{color:var(--muted);font-size:14px;margin-bottom:24px}
+.captcha-card{background:linear-gradient(180deg,var(--panel),var(--panel2));border:1px solid var(--line);border-radius:22px;padding:28px 22px;margin-top:12px}
+.captcha-q-label{color:var(--muted);font-size:11px;text-transform:uppercase;letter-spacing:1.5px;font-weight:700;margin-bottom:8px}
+.captcha-q{font-size:44px;font-weight:900;letter-spacing:-1px;margin:8px 0 22px;background:linear-gradient(135deg,#2ea8ff,#7c68ff);-webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text;line-height:1.1;min-height:52px;display:flex;align-items:center;justify-content:center}
+.captcha-input{width:100%;padding:18px;border-radius:16px;background:rgba(0,0,0,.4);border:2px solid var(--line);color:var(--text);font-size:24px;text-align:center;font-weight:800;letter-spacing:4px;outline:none;transition:border-color .2s}
+.captcha-input:focus{border-color:var(--blue)}
+.captcha-input.err{border-color:var(--red);animation:shake .4s}
+@keyframes shake{0%,100%{transform:translateX(0)}25%{transform:translateX(-8px)}75%{transform:translateX(8px)}}
+.channels-card{background:linear-gradient(180deg,var(--panel),var(--panel2));border:1px solid var(--line);border-radius:20px;padding:6px;margin-top:16px;text-align:left}
+.channel-item{display:flex;align-items:center;gap:12px;padding:14px;border-radius:14px;margin-bottom:4px;text-decoration:none;color:inherit}
+.channel-item:last-child{margin-bottom:0}
+.channel-item .ico{width:42px;height:42px;border-radius:12px;background:linear-gradient(135deg,rgba(46,168,255,.22),rgba(124,104,255,.22));border:1px solid var(--line);display:grid;place-items:center;font-size:20px;flex:0 0 42px}
+.channel-item .nm{font-weight:700;font-size:14px}
+.channel-item .un{color:var(--muted);font-size:12px;margin-top:2px}
+.channel-item .go{margin-left:auto;color:var(--blue);font-size:12px;font-weight:700}
 .modal-bg{position:fixed;inset:0;z-index:40;background:rgba(3,8,18,.72);backdrop-filter:blur(6px);display:flex;align-items:flex-end;justify-content:center}
 .modal{width:100%;max-width:640px;max-height:88vh;overflow-y:auto;background:linear-gradient(180deg,#0d1c38,#0a1528);border-radius:24px 24px 0 0;border:1px solid var(--line);border-bottom:0;padding:20px 18px calc(24px + env(safe-area-inset-bottom));animation:slideUp .28s}
 @keyframes slideUp{from{transform:translateY(30px);opacity:.5}to{transform:none;opacity:1}}
@@ -1326,17 +1418,41 @@ button{font-family:inherit;cursor:pointer;border:0;outline:0;color:inherit}
 .modal .muted{color:var(--muted);font-size:13px;margin-bottom:14px}
 .mh{display:flex;align-items:center;gap:10px;margin-bottom:14px}
 .mh .close{margin-left:auto;background:rgba(255,255,255,.06);border:1px solid var(--line);border-radius:10px;width:34px;height:34px;display:grid;place-items:center;font-size:16px}
-.toast{position:fixed;left:50%;bottom:110px;transform:translateX(-50%);padding:12px 18px;border-radius:14px;background:rgba(20,35,65,.96);border:1px solid var(--line);font-size:13px;font-weight:600;z-index:80;animation:toastIn .25s}
+.toast{position:fixed;left:50%;bottom:110px;transform:translateX(-50%);padding:12px 18px;border-radius:14px;background:rgba(20,35,65,.96);border:1px solid var(--line);font-size:13px;font-weight:600;z-index:200;animation:toastIn .25s}
 @keyframes toastIn{from{transform:translate(-50%,14px);opacity:0}to{transform:translate(-50%,0);opacity:1}}
 .center{display:grid;place-items:center;min-height:60vh;text-align:center;padding:20px}
 .spinner{width:44px;height:44px;border-radius:50%;border:3px solid rgba(46,168,255,.18);border-top-color:var(--blue);animation:spin 1s linear infinite;margin:0 auto 14px}
 @keyframes spin{to{transform:rotate(360deg)}}
-.captcha-box{background:rgba(0,0,0,.3);border:1px solid var(--line);border-radius:18px;padding:20px;text-align:center;margin-bottom:14px}
-.captcha-box .q{font-size:26px;font-weight:800;letter-spacing:1px;margin:8px 0}
 </style>
 </head>
 <body>
+
 <div id="loading" class="center"><div><div class="spinner"></div><div style="color:var(--muted);font-size:13px">Loading Mega Spark…</div></div></div>
+
+<div id="gate-captcha" class="gate">
+  <div class="gate-inner">
+    <div class="gate-logo">⚡</div>
+    <h1 class="gate-title">Mega Spark</h1>
+    <div class="gate-sub">Human verification required</div>
+    <div class="captcha-card">
+      <div class="captcha-q-label">Solve this</div>
+      <div class="captcha-q" id="captchaQ">···</div>
+      <input class="captcha-input" id="captchaA" type="number" inputmode="numeric" placeholder="?" maxlength="4">
+      <button class="btn" id="captchaBtn" style="margin-top:14px">✅ Verify Answer</button>
+    </div>
+  </div>
+</div>
+
+<div id="gate-channels" class="gate">
+  <div class="gate-inner">
+    <div class="gate-logo">📢</div>
+    <h1 class="gate-title">Join Required Channels</h1>
+    <div class="gate-sub">Join all channels below, then verify</div>
+    <div class="channels-card" id="channelsList"></div>
+    <button class="btn" id="verifyBtn" style="margin-top:16px">🔄 Verify Membership</button>
+  </div>
+</div>
+
 <div id="app" class="hidden">
   <header class="header">
     <div class="logo">⚡</div>
@@ -1344,30 +1460,6 @@ button{font-family:inherit;cursor:pointer;border:0;outline:0;color:inherit}
     <div class="balance-chip">💼 <span class="amt" id="chipBalance">0.00</span> ETB</div>
   </header>
   <main class="wrap">
-    <section id="screen-verify" class="screen">
-      <div class="card hero" style="text-align:center;padding:24px 18px">
-        <div style="font-size:48px;line-height:1;margin-bottom:8px">⚡</div>
-        <h2 style="margin:0 0 6px;font-size:20px">Welcome to Mega Spark</h2>
-        <div style="color:var(--muted);font-size:13px">Complete verification to continue.</div>
-      </div>
-      <div class="warn">⚠️ <b>One account per person.</b> Multi-account usage will result in withdrawal rejection without payment.</div>
-      <div id="captchaSection">
-        <div class="sect">Step 1 · Human Verification</div>
-        <div class="captcha-box">
-          <div style="color:var(--muted);font-size:12px;margin-bottom:6px">Solve to prove you are human</div>
-          <div style="color:var(--muted);font-size:10px;text-transform:uppercase;letter-spacing:1px;font-weight:700">Question</div>
-          <div class="q" id="captchaQ">Loading…</div>
-          <input class="input" id="captchaA" type="number" inputmode="numeric" placeholder="Type your answer" style="text-align:center;font-size:18px;font-weight:700">
-          <button class="btn" id="captchaBtn" style="margin-top:12px">✅ Verify</button>
-        </div>
-      </div>
-      <div id="channelsSection" class="hidden">
-        <div class="sect">Step 2 · Required Channels</div>
-        <div id="channelsList"></div>
-        <button class="btn" id="verifyBtn" style="margin-top:10px">🔄 Verify Membership</button>
-      </div>
-    </section>
-
     <section id="screen-overview" class="screen">
       <div class="card hero">
         <div class="label">Available Balance</div>
@@ -1399,7 +1491,7 @@ button{font-family:inherit;cursor:pointer;border:0;outline:0;color:inherit}
         <button class="btn gold" id="dailyBtn">Claim Daily Bonus</button>
       </div>
       <div class="sect">Tasks</div>
-      <div id="tasksList"><div style="color:var(--muted);font-size:13px;text-align:center;padding:20px">No active tasks.</div></div>
+      <div id="tasksList"></div>
     </section>
 
     <section id="screen-activity" class="screen">
@@ -1475,6 +1567,21 @@ function toast(m, ms=2200){ const t=document.createElement('div'); t.className='
 function fmt(n){ return (Number(n)||0).toFixed(2); }
 function esc(s){ return String(s ?? '').replace(/[&<>"']/g, c=>({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[c])); }
 
+function showGate(name) {
+  $('#loading').classList.add('hidden');
+  $('#app').classList.add('hidden');
+  document.body.classList.remove('app-mode');
+  $$('.gate').forEach(g => g.classList.remove('active'));
+  const g = $('#gate-'+name);
+  if (g) g.classList.add('active');
+}
+function showApp() {
+  $('#loading').classList.add('hidden');
+  $$('.gate').forEach(g => g.classList.remove('active'));
+  $('#app').classList.remove('hidden');
+  document.body.classList.add('app-mode');
+  showScreen('overview');
+}
 function showScreen(n){
   $$('.screen').forEach(s => s.classList.remove('active'));
   const el = $('#screen-'+n); if (el) el.classList.add('active');
@@ -1520,28 +1627,27 @@ async function loadMe(){
   if (!r.ok) {
     if (r.status === 401) { $('#loading').innerHTML='<div class="center"><div>Open from Telegram.</div></div>'; return false; }
     if (r.status === 403) { $('#loading').innerHTML='<div class="center"><div style="color:var(--red)">🚫 Restricted.</div></div>'; return false; }
-    if (r.status === 503) { $('#loading').innerHTML='<div class="center"><div>🛠 Maintenance.</div></div>'; return false; }
+    if (r.status === 503) { $('#loading').innerHTML='<div class="center"><div>🛠 Maintenance mode.</div></div>'; return false; }
     return false;
   }
   STATE.me = r.data; return true;
 }
 
 async function startCaptcha(){
-  const q = $('#captchaQ'); q.textContent = 'Loading…'; q.style.color = 'var(--muted)';
+  const q = $('#captchaQ'); q.textContent = '···';
   const r = await api('/api/captcha', { method:'POST' });
-  if (r.ok && r.data.question) { STATE.captchaToken = r.data.token; q.textContent = r.data.question; q.style.color = ''; }
-  else { q.textContent = 'Tap to reload'; q.style.color = 'var(--red)'; }
-  q.onclick = startCaptcha;
+  if (r.ok && r.data.question) { STATE.captchaToken = r.data.token; q.textContent = r.data.question; }
+  else { q.textContent = 'Error'; }
 }
 
 async function loadChannels(){
   const r = await api('/api/channels');
   if (!r.ok) return;
   $('#channelsList').innerHTML = (r.data.channels||[]).map(c => `
-    <a class="row" href="${esc(c.url)}" target="_blank" rel="noopener">
+    <a class="channel-item" href="${esc(c.url)}" target="_blank" rel="noopener">
       <div class="ico">📢</div>
-      <div class="body"><div class="title">${esc(c.name)}</div><div class="desc">${esc(c.username)}</div></div>
-      <div class="right" style="color:var(--blue);font-size:12px">Join →</div>
+      <div><div class="nm">${esc(c.name)}</div><div class="un">${esc(c.username)}</div></div>
+      <div class="go">Join →</div>
     </a>`).join('');
 }
 
@@ -1549,7 +1655,32 @@ async function loadTasks(){
   const r = await api('/api/tasks');
   if (r.ok) STATE.tasks = r.data.tasks || [];
   const box = $('#tasksList');
-  if (!STATE.tasks.length) { box.innerHTML = '<div style="color:var(--muted);font-size:13px;text-align:center;padding:20px">No active tasks.</div>'; return; }
+  if (!STATE.tasks.length) {
+    box.innerHTML = `
+      <div class="card" style="text-align:center;padding:28px 20px">
+        <div style="font-size:52px;line-height:1;margin-bottom:8px">📋</div>
+        <div style="font-weight:800;font-size:20px;margin-bottom:6px">Tasks Coming Soon</div>
+        <div style="color:var(--muted);font-size:13px;line-height:1.6;margin-bottom:18px">
+          Get ready! New paid tasks will be available here very soon.
+          Complete simple activities and earn real rewards.
+        </div>
+        <div style="text-align:left;background:rgba(0,0,0,.28);border:1px solid var(--line);border-radius:14px;padding:14px;margin-bottom:14px">
+          <div style="font-size:12px;font-weight:700;color:var(--muted);letter-spacing:1px;margin-bottom:8px">WHAT TO EXPECT</div>
+          <div style="font-size:13px;line-height:1.9">
+            🎯 Join Telegram channels<br>
+            👀 Watch short videos<br>
+            ✅ Complete surveys<br>
+            📱 Social media tasks<br>
+            🔗 Website visits<br>
+            📸 Screenshot proofs
+          </div>
+        </div>
+        <div style="color:var(--muted);font-size:12px">
+          💡 Stay tuned — announcements coming soon!
+        </div>
+      </div>`;
+    return;
+  }
   box.innerHTML = STATE.tasks.map(t => {
     const st = t.status ? `<span class="badge ${t.status}">${t.status}</span>` : '';
     const dis = (t.status === 'pending' || t.status === 'approved') ? 'disabled' : '';
@@ -1561,8 +1692,8 @@ async function loadTasks(){
       </div>
       ${st ? `<div>${st}</div>` : ''}
       <div class="btn-row">
-        ${t.url ? `<a class="btn dark" href="${esc(t.url)}" target="_blank" style="text-decoration:none">Open</a>` : ''}
-        <button class="btn" data-task="${t.id}" ${dis}>Submit</button>
+        ${t.url ? `<a class="btn dark" href="${esc(t.url)}" target="_blank" style="text-decoration:none">Open Task</a>` : ''}
+        <button class="btn" data-task="${t.id}" ${dis}>Submit Proof</button>
       </div></div>`;
   }).join('');
   $$('[data-task]').forEach(b => b.addEventListener('click', () => openSubmit(parseInt(b.dataset.task))));
@@ -1601,33 +1732,42 @@ function openModal(html){
 
 function openSubmit(taskId){
   const t = STATE.tasks.find(x => x.id === taskId); if (!t) return;
-  openModal(`<div class="mh"><h3>Submit Proof</h3><button class="close" data-close>✕</button></div>
+  const botUser = STATE.me.settings.bot_username;
+  const code = `#T${taskId}`;
+  openModal(`<div class="mh"><h3>Submit Task Proof</h3><button class="close" data-close>✕</button></div>
     <div class="muted">${esc(t.title)} • +${fmt(t.reward)} ETB</div>
-    <label class="label">Proof (text or link)</label>
-    <textarea class="input" id="proofInput" rows="5" placeholder="Paste your proof…"></textarea>
-    <div class="btn-row"><button class="btn dark" data-close>Cancel</button><button class="btn" id="submitProofBtn">Submit</button></div>`);
-  $('#submitProofBtn').addEventListener('click', async () => {
-    const proof = ($('#proofInput').value || '').trim();
-    if (!proof) { toast('Proof required'); return; }
-    const r = await api(`/api/tasks/${taskId}/submit`, { method:'POST', body:{ proof_text: proof } });
-    if (r.ok) { toast('✅ Submitted'); closeModal(); loadTasks(); }
-    else toast(r.data.error || 'Failed');
-  });
+    <div class="card" style="background:rgba(46,168,255,.08);border-color:rgba(46,168,255,.3)">
+      <div style="font-size:13px;font-weight:700;margin-bottom:8px">📸 How to submit</div>
+      <ol style="margin:0;padding-left:20px;font-size:13px;line-height:1.7;color:var(--muted)">
+        <li>Complete the task</li>
+        <li>Take a <b style="color:var(--text)">screenshot</b> as proof</li>
+        <li>Open <b style="color:var(--blue)">@${esc(botUser)}</b> on Telegram</li>
+        <li>Send the screenshot with caption:</li>
+      </ol>
+      <div style="text-align:center;margin:14px 0 6px">
+        <div style="display:inline-block;padding:10px 20px;background:rgba(0,0,0,.4);border:2px dashed rgba(46,168,255,.5);border-radius:12px;font-size:20px;font-weight:900;letter-spacing:2px;color:var(--blue)">${code}</div>
+      </div>
+      <div style="text-align:center;color:var(--muted);font-size:11px;margin-top:8px">Admin will review and credit your reward</div>
+    </div>
+    <div class="btn-row">
+      <button class="btn dark" data-close>Close</button>
+      <a class="btn" href="https://t.me/${esc(botUser)}" target="_blank" style="text-decoration:none">📤 Open Bot</a>
+    </div>`);
 }
 
 function openInvite(){
   const m = STATE.me;
   openModal(`<div class="mh"><h3>Invite Friends</h3><button class="close" data-close>✕</button></div>
     <div class="muted">Earn <b style="color:var(--gold)">${fmt(m.settings.referral_reward)} ETB</b> per verified referral.</div>
-    <div class="warn">⚠️ Referring your own accounts = <b>BLOCKED</b> and reward not paid.</div>
+    <div class="warn">⚠️ Multi-account usage = <b>withdrawal rejected without payment</b>.</div>
     <div class="card hero" style="text-align:center">
       <div class="label">Your Referral Link</div>
       <div style="word-break:break-all;font-size:13px;margin:8px 0;color:var(--blue)" id="refLink">https://t.me/${esc(m.settings.bot_username)}?start=ref_${m.user_id}</div>
       <button class="btn" id="copyRef">📋 Copy Link</button>
     </div>
     <div class="card">
-      <div style="display:flex;justify-content:space-between"><span style="color:var(--muted)">Verified referrals</span><b>${m.referral_count}</b></div>
-      <div style="display:flex;justify-content:space-between;margin-top:6px"><span style="color:var(--muted)">Referral earnings</span><b style="color:var(--gold)">${fmt(m.referral_earnings)} ETB</b></div>
+      <div style="display:flex;justify-content:space-between;padding:8px 0;border-bottom:1px solid var(--line)"><span style="color:var(--muted)">Verified referrals</span><b style="color:var(--green);font-size:18px">${m.referral_count}</b></div>
+      <div style="display:flex;justify-content:space-between;padding:8px 0"><span style="color:var(--muted)">Referral earnings</span><b style="color:var(--gold)">${fmt(m.referral_earnings)} ETB</b></div>
     </div>`);
   $('#copyRef').addEventListener('click', async () => {
     const link = $('#refLink').textContent;
@@ -1663,9 +1803,13 @@ function openWallet(){
 function openWithdraw(){
   const m = STATE.me;
   if (!m.wallet_type || !m.wallet_number) { toast('Save wallet first'); openWallet(); return; }
+  if (!m.settings.payment_day) {
+    toast('🛑 Sunday — no withdrawals. Try Monday.');
+    return;
+  }
   openModal(`<div class="mh"><h3>Request Payout</h3><button class="close" data-close>✕</button></div>
     <div class="muted">Available: <b style="color:var(--gold)">${fmt(m.balance)} ETB</b> · Min: ${fmt(m.settings.minimum_withdrawal)} ETB</div>
-    <div class="warn">⚠️ Multi-account usage = <b>rejection without payment</b>. Withdraw only from a single personal account.</div>
+    <div class="warn">⚠️ Multi-account usage = <b>rejection without payment</b>.<br>Admin reviews before paying.</div>
     <label class="label">Amount (ETB)</label>
     <input class="input" id="wamount" type="number" step="0.01" value="${Math.max(m.balance, m.settings.minimum_withdrawal).toFixed(2)}">
     <div class="card" style="margin-top:12px">
@@ -1677,7 +1821,11 @@ function openWithdraw(){
     const amount = parseFloat($('#wamount').value || 0);
     const r = await api('/api/withdraw', { method:'POST', body:{ amount } });
     if (r.ok) { toast('⏳ Requested'); closeModal(); await refresh(); }
-    else toast(r.data.error || 'Failed');
+    else {
+      const err = r.data.error || 'Failed';
+      if (err === 'sunday') toast('🛑 Sunday — no withdrawals');
+      else toast(err);
+    }
   });
 }
 
@@ -1692,9 +1840,9 @@ function openServices(){
 async function refresh(){
   if (!(await loadMe())) return;
   renderApp();
-  if (!STATE.me.captcha_passed) { await startCaptcha(); showScreen('verify'); return; }
-  if (!STATE.me.verified) { $('#captchaSection').classList.add('hidden'); $('#channelsSection').classList.remove('hidden'); await loadChannels(); showScreen('verify'); return; }
-  await loadTasks(); showScreen('overview');
+  if (!STATE.me.captcha_passed) { await startCaptcha(); showGate('captcha'); return; }
+  if (!STATE.me.verified) { await loadChannels(); showGate('channels'); return; }
+  await loadTasks(); showApp();
 }
 
 async function verifyCaptcha(){
@@ -1705,14 +1853,22 @@ async function verifyCaptcha(){
   if (r.ok) {
     toast('✅ Verified');
     await loadMe(); renderApp();
-    $('#captchaSection').classList.add('hidden');
-    $('#channelsSection').classList.remove('hidden');
     await loadChannels();
+    showGate('channels');
   } else {
-    STATE.captchaToken = r.data.token; $('#captchaQ').textContent = r.data.question;
-    $('#captchaA').value = ''; toast('❌ Wrong');
+    if (r.data.token && r.data.question) {
+      STATE.captchaToken = r.data.token;
+      $('#captchaQ').textContent = r.data.question;
+    } else {
+      await startCaptcha();
+    }
+    $('#captchaA').value = '';
+    const inp = $('#captchaA');
+    inp.classList.add('err');
+    setTimeout(() => inp.classList.remove('err'), 400);
+    toast('❌ Wrong answer — try again');
   }
-  btn.disabled = false; btn.textContent = '✅ Verify';
+  btn.disabled = false; btn.textContent = '✅ Verify Answer';
 }
 
 async function verifyChannels(){
@@ -1727,6 +1883,7 @@ async function verifyChannels(){
 }
 
 $('#captchaBtn')?.addEventListener('click', verifyCaptcha);
+$('#captchaA')?.addEventListener('keydown', e => { if (e.key === 'Enter') verifyCaptcha(); });
 $('#verifyBtn')?.addEventListener('click', verifyChannels);
 $('#dailyBtn')?.addEventListener('click', async () => {
   const r = await api('/api/daily-bonus', { method:'POST' });
@@ -1747,12 +1904,10 @@ $('#servicesBtn')?.addEventListener('click', openServices);
 (async () => {
   try {
     if (!(await loadMe())) return;
-    $('#loading').classList.add('hidden');
-    $('#app').classList.remove('hidden');
     renderApp();
-    if (!STATE.me.captcha_passed) { await startCaptcha(); showScreen('verify'); }
-    else if (!STATE.me.verified) { $('#captchaSection').classList.add('hidden'); $('#channelsSection').classList.remove('hidden'); await loadChannels(); showScreen('verify'); }
-    else { await loadTasks(); showScreen('overview'); }
+    if (!STATE.me.captcha_passed) { await startCaptcha(); showGate('captcha'); }
+    else if (!STATE.me.verified) { await loadChannels(); showGate('channels'); }
+    else { await loadTasks(); showApp(); }
   } catch(e) {
     console.error(e);
     $('#loading').innerHTML = '<div class="center"><div>Failed. Refresh.</div></div>';
