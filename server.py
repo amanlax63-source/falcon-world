@@ -1,5 +1,5 @@
 # ═══════════════════════════════════════════════════════════════
-# ⚡ MEGA SPARK — PostgreSQL Version (Aiven)
+# ⚡ MEGA SPARK — PostgreSQL (Neon) + Performance Optimized
 # ═══════════════════════════════════════════════════════════════
 import json, hmac, hashlib, time, asyncio, os, re, html, secrets
 from urllib.parse import parse_qsl
@@ -56,7 +56,7 @@ def get_pool():
             raise RuntimeError("DATABASE_URL is not set")
         if url.startswith("postgres://"):
             url = url.replace("postgres://", "postgresql://", 1)
-        _db_pool = ThreadedConnectionPool(1, 8, url)
+        _db_pool = ThreadedConnectionPool(1, 5, url)
     return _db_pool
 
 
@@ -97,7 +97,6 @@ class PgConn:
             try: self._conn.rollback()
             except: pass
             return _DummyCur()
-
         sql2 = sql.replace("?", "%s")
         cur = self._conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
         cur.execute(sql2, params or ())
@@ -107,11 +106,9 @@ class PgConn:
         cur = self._conn.cursor()
         for stmt in script.split(";"):
             stmt = stmt.strip()
-            if not stmt:
-                continue
+            if not stmt: continue
             u = stmt.upper()
-            if u.startswith("PRAGMA"):
-                continue
+            if u.startswith("PRAGMA"): continue
             stmt2 = stmt.replace("?", "%s")
             try:
                 cur.execute(stmt2)
@@ -135,8 +132,7 @@ class PgConn:
         except: pass
 
     def close(self):
-        try:
-            self._pool.putconn(self._conn)
+        try: self._pool.putconn(self._conn)
         except Exception:
             try: self._conn.close()
             except: pass
@@ -286,7 +282,6 @@ def init_db():
         CREATE INDEX IF NOT EXISTS idx_ref ON users(referred_by);
         """)
 
-        # Migration-safe columns
         for c, ddl in {
             "multi_flag":"INTEGER DEFAULT 0","is_test":"INTEGER DEFAULT 0",
             "last_name":"TEXT DEFAULT ''","device_hash":"TEXT DEFAULT ''",
@@ -330,20 +325,34 @@ def init_db():
         conn.close()
 
 
+# ═══ SETTINGS CACHE (Performance) ═══
+_settings_cache = {}
+_settings_cache_time = 0
+
 def get_setting(k, d=None, kind=float):
-    conn = db()
-    try:
-        r = conn.execute("SELECT value FROM settings WHERE key=?", (k,)).fetchone()
-        if not r: return d
+    global _settings_cache, _settings_cache_time
+    now = time.time()
+    if now - _settings_cache_time > 60 or not _settings_cache:
+        conn = db()
         try:
-            if kind == float: return float(r["value"])
-            if kind == int: return int(float(r["value"]))
-            return r["value"]
-        except: return d
-    finally: conn.close()
+            rows = conn.execute("SELECT key, value FROM settings").fetchall()
+            _settings_cache = {r["key"]: r["value"] for r in rows}
+            _settings_cache_time = now
+        except Exception:
+            pass
+        finally:
+            conn.close()
+    if k not in _settings_cache: return d
+    try:
+        v = _settings_cache[k]
+        if kind == float: return float(v)
+        if kind == int: return int(float(v))
+        return v
+    except: return d
 
 
 def set_setting(k, v):
+    global _settings_cache, _settings_cache_time
     conn = db()
     try:
         conn.execute(
@@ -351,7 +360,9 @@ def set_setting(k, v):
             (k, str(v)),
         )
         conn.commit()
-    finally: conn.close()
+        _settings_cache_time = 0
+    finally:
+        conn.close()
 
 
 def _r2(x): return round(float(x) + 1e-9, 2)
@@ -428,7 +439,7 @@ def ensure_user(uid, username="", first_name="", last_name="", referred_by=None)
         r = conn.execute("SELECT user_id, referred_by FROM users WHERE user_id=?", (uid,)).fetchone()
         if not r:
             conn.execute(
-                "INSERT INTO users(user_id,username,first_name,last_name,referred_by,created_at,updated_at,last_active) VALUES(?,?,?,?,?,?,?,?)",
+                "INSERT INTO users(user_id,username,first_name,last_name,referred_by,created_at,updated_at,last_active) VALUES(?,?,?,?,?,?,?,?) ON CONFLICT (user_id) DO NOTHING",
                 (uid, username or "", first_name or "", last_name or "", referred_by, now, now, now),
             )
         else:
@@ -486,7 +497,7 @@ def add_risk(uid, pts, flag, details=""):
             (uid, flag, pts, details, int(time.time())),
         )
         conn.commit()
-    except Exception as e:
+    except Exception:
         try: conn.rollback()
         except: pass
     finally:
@@ -543,7 +554,7 @@ def pay_referral_if_eligible(uid):
         if multi:
             conn.execute("UPDATE users SET multi_flag=1, risk_score=risk_score+30 WHERE user_id IN (?,?)", (uid, ref_id))
         conn.commit()
-    except Exception as e:
+    except Exception:
         try: conn.rollback()
         except: pass
         return None, None
@@ -554,33 +565,43 @@ def pay_referral_if_eligible(uid):
     return (reward if ok else None), ({"multi": True, "reason": reason, "referrer": ref_id} if multi else None)
 
 
+# ═══ ATOMIC DAILY BONUS (FIXED — 2x impossible) ═══
 def claim_daily(uid):
+    now = int(time.time())
+    reward = get_setting("daily_reward", DEFAULT_DAILY, kind=float)
     conn = db()
     try:
-        r = conn.execute("SELECT banned, verified, daily_last_claim FROM users WHERE user_id=?", (uid,)).fetchone()
-        if not r: return False, {"error": "user_not_found"}
-        if r["banned"]: return False, {"error": "banned"}
-        if not r["verified"]: return False, {"error": "not_verified"}
-        last = int(r["daily_last_claim"] or 0); now = int(time.time())
-        if last and (now - last) < 86400:
-            return False, {"error": "cooldown", "remaining": 86400 - (now - last)}
-        reward = get_setting("daily_reward", DEFAULT_DAILY, kind=float)
         cur = conn.execute(
-            "UPDATE users SET daily_last_claim=? WHERE user_id=? AND (daily_last_claim=0 OR ?-daily_last_claim >= 86400)",
-            (now, uid, now),
+            """UPDATE users 
+               SET daily_last_claim = ?,
+                   balance = ROUND((balance + ?)::numeric, 2),
+                   total_earned = ROUND((total_earned + ?)::numeric, 8),
+                   daily_earnings = ROUND((daily_earnings + ?)::numeric, 8),
+                   updated_at = ?
+               WHERE user_id = ?
+                 AND banned = 0
+                 AND verified = 1
+                 AND (daily_last_claim = 0 OR ? - daily_last_claim >= 86400)
+               RETURNING balance""",
+            (now, reward, reward, reward, now, uid, now),
         )
-        if cur._cur.rowcount != 1:
-            conn.rollback(); return False, {"error": "cooldown", "remaining": 86400}
+        row = cur.fetchone()
+        if not row:
+            conn.rollback()
+            u = conn.execute("SELECT banned, verified, daily_last_claim FROM users WHERE user_id=?", (uid,)).fetchone()
+            if not u: return False, {"error": "user_not_found"}
+            if u["banned"]: return False, {"error": "banned"}
+            if not u["verified"]: return False, {"error": "not_verified"}
+            last = int(u["daily_last_claim"] or 0)
+            return False, {"error": "cooldown", "remaining": max(0, 86400 - (now - last))}
         conn.commit()
+        return True, {"reward": reward, "balance": float(row["balance"])}
     except Exception:
         try: conn.rollback()
         except: pass
         return False, {"error": "server_error"}
     finally:
         conn.close()
-    ok, bal = credit(uid, reward, "daily", "Daily bonus")
-    if not ok: return False, {"error": "credit_failed"}
-    return True, {"reward": reward, "balance": bal}
 
 
 def daily_status(uid):
@@ -649,7 +670,7 @@ def create_withdrawal(uid, amount):
         )
         wid = int(cur.fetchone()["id"])
         conn.commit()
-    except Exception as e:
+    except Exception:
         try: conn.rollback()
         except: pass
         return False, "Server error"
@@ -938,7 +959,6 @@ def parse_ref(text):
     return None
 
 
-# ═══ AMHARIC WELCOME (the ONLY Amharic) ═══
 WELCOME_MSG = (
     "⚡ <b>ወደ Mega Spark እንኳን በደህና መጡ</b>\n\n"
     "💰 ያግኙ እና ተግባሮችን ያጠናቅቁ\n"
@@ -1070,7 +1090,6 @@ async def user_audit(cid, tid):
     await send(cid, text)
 
 
-# ═══ ADMIN PANEL ═══
 def admin_kb():
     conn = db()
     try:
@@ -1125,7 +1144,6 @@ async def admin_dash(cid):
         admin_kb())
 
 
-# ═══ BOT HANDLERS ═══
 async def handle_message(msg):
     chat = msg.get("chat", {}); user = msg.get("from", {})
     cid = chat.get("id"); uid = user.get("id")
@@ -1910,7 +1928,7 @@ async def on_startup():
         r = await tg("setWebhook", p)
         print("setWebhook:", r)
 
-# ═══ MINI APP (unchanged — same as previous) ═══
+# ═══ MINI APP ═══
 MINI_APP_HTML = r"""<!doctype html>
 <html lang="en">
 <head>
@@ -2246,7 +2264,14 @@ async function startCaptcha(){
   else { q.textContent = 'Error'; }
 }
 
-async function loadChannelStatus(showSpinner){
+/* ═══ PERFORMANCE: 30-second channel status cache ═══ */
+let CHANNEL_CACHE = { data: null, time: 0 };
+async function loadChannelStatus(showSpinner, force){
+  const now = Date.now();
+  if (!force && CHANNEL_CACHE.data && (now - CHANNEL_CACHE.time) < 30000) {
+    renderChannels(CHANNEL_CACHE.data);
+    return;
+  }
   if (showSpinner) {
     $('#channelsList').innerHTML = '<div style="text-align:center;padding:24px;color:var(--muted);font-size:13px"><div class="spinner" style="width:28px;height:28px;margin-bottom:8px"></div>Checking…</div>';
   }
@@ -2255,11 +2280,16 @@ async function loadChannelStatus(showSpinner){
     $('#channelsList').innerHTML = '<div style="text-align:center;padding:20px;color:var(--red);font-size:13px">Failed</div>';
     return;
   }
-  const chans = r.data.channels || [];
+  CHANNEL_CACHE = { data: r.data, time: now };
+  renderChannels(r.data);
+}
+
+function renderChannels(data){
+  const chans = data.channels || [];
   const joinedCount = chans.filter(c => c.joined).length;
   const total = chans.length;
   const remaining = total - joinedCount;
-  if (r.data.all_joined) {
+  if (data.all_joined) {
     $('#channelStatus').innerHTML = '<span style="color:var(--green)">✅ All verified!</span>';
     $('#verifyBtn').disabled = false;
     $('#verifyBtn').textContent = '✅ Continue';
@@ -2275,15 +2305,16 @@ async function loadChannelStatus(showSpinner){
       <div class="go">${c.joined ? '✓ Joined' : 'Join →'}</div>
     </a>`).join('');
 }
+
 document.addEventListener('visibilitychange', () => {
-  if (document.visibilityState === 'visible' && $('#gate-channels').classList.contains('active')) loadChannelStatus(false);
+  if (document.visibilityState === 'visible' && $('#gate-channels').classList.contains('active')) loadChannelStatus(false, true);
 });
 window.addEventListener('focus', () => {
-  if ($('#gate-channels').classList.contains('active')) loadChannelStatus(false);
+  if ($('#gate-channels').classList.contains('active')) loadChannelStatus(false, true);
 });
 if (tg && tg.onEvent) {
   tg.onEvent('activated', () => {
-    if ($('#gate-channels').classList.contains('active')) loadChannelStatus(false);
+    if ($('#gate-channels').classList.contains('active')) loadChannelStatus(false, true);
   });
 }
 
@@ -2469,7 +2500,7 @@ async function verifyCaptcha(){
     toast('✅ Verified');
     await loadMe(); renderApp();
     showGate('channels');
-    await loadChannelStatus(true);
+    await loadChannelStatus(true, true);
   } else {
     if (r.data.token && r.data.question) {
       STATE.captchaToken = r.data.token;
@@ -2491,13 +2522,8 @@ async function verifyChannels(){
     const chans = r.data.channels || [];
     const joined = chans.filter(c => c.joined).length;
     const remaining = chans.length - joined;
-    $('#channelStatus').innerHTML = `<span style="color:var(--gold)">${remaining} channel(s) remaining</span> · ${joined}/${chans.length}`;
-    $('#channelsList').innerHTML = chans.map(c => `
-      <a class="channel-item ${c.joined ? 'joined' : ''}" href="${esc(c.url)}" target="_blank" rel="noopener">
-        <div class="ico">${c.joined ? '✅' : '📢'}</div>
-        <div><div class="nm">${esc(c.name)}</div><div class="un">${esc(c.username)}</div></div>
-        <div class="go">${c.joined ? '✓ Joined' : 'Join →'}</div>
-      </a>`).join('');
+    CHANNEL_CACHE = { data: r.data, time: Date.now() };
+    renderChannels(r.data);
     toast(`⚠️ ${remaining} channel(s) still needed`);
     btn.disabled = false; btn.textContent = '🔄 Verify Membership';
   }
