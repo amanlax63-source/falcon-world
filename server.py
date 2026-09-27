@@ -1,8 +1,7 @@
 # ═══════════════════════════════════════════════════════════════
-# ⚡ MEGA SPARK — Complete System (English + Amharic welcome)
-# Admin Panel: 6 Buttons · Full access
+# ⚡ MEGA SPARK — PostgreSQL Version (Aiven)
 # ═══════════════════════════════════════════════════════════════
-import json, hmac, hashlib, time, asyncio, os, re, sqlite3, html, secrets
+import json, hmac, hashlib, time, asyncio, os, re, html, secrets
 from urllib.parse import parse_qsl
 from datetime import datetime
 from typing import Optional
@@ -10,13 +9,17 @@ from fastapi import FastAPI, Request, Body
 from fastapi.responses import HTMLResponse, JSONResponse
 import httpx
 
+import psycopg2
+import psycopg2.extras
+from psycopg2.pool import ThreadedConnectionPool
+
 BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip()
 ADMIN_IDS = {int(x.strip()) for x in os.getenv("ADMIN_IDS", "").split(",") if x.strip().isdigit()}
 BOT_USERNAME = os.getenv("BOT_USERNAME", "MegaSpark_Bot").strip().lstrip("@")
 MINI_APP_URL = os.getenv("MINI_APP_URL", "").strip()
 WEBHOOK_URL = os.getenv("WEBHOOK_URL", "").strip()
 WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "").strip()
-DB_PATH = os.getenv("DB_PATH", "megaspark.db").strip() or "megaspark.db"
+DATABASE_URL = os.getenv("DATABASE_URL", "").strip()
 SUPPORT_USERNAME = "@AmanM_12"
 TELEGRAM_API = f"https://api.telegram.org/bot{BOT_TOKEN}" if BOT_TOKEN else ""
 
@@ -42,75 +45,290 @@ SERVICES = [
     ("📱", "Social Promotion", "Boost social media"),
 ]
 
-def db():
-    conn = sqlite3.connect(DB_PATH, timeout=30, isolation_level=None)
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA journal_mode=WAL")
-    conn.execute("PRAGMA busy_timeout=10000")
-    return conn
+# ═══ POSTGRES WRAPPER ═══
+_db_pool = None
 
-def _col(conn, t, c): return c in {r[1] for r in conn.execute(f"PRAGMA table_info({t})").fetchall()}
+def get_pool():
+    global _db_pool
+    if _db_pool is None:
+        url = DATABASE_URL
+        if not url:
+            raise RuntimeError("DATABASE_URL is not set")
+        if url.startswith("postgres://"):
+            url = url.replace("postgres://", "postgresql://", 1)
+        _db_pool = ThreadedConnectionPool(1, 8, url)
+    return _db_pool
+
+
+class _DummyCur:
+    def fetchone(self): return None
+    def fetchall(self): return []
+    def __iter__(self): return iter([])
+    @property
+    def lastrowid(self): return None
+
+
+class _WrapCur:
+    def __init__(self, cur):
+        self._cur = cur
+    def fetchone(self): return self._cur.fetchone()
+    def fetchall(self): return self._cur.fetchall()
+    def __iter__(self): return iter(self._cur)
+
+
+class PgConn:
+    def __init__(self, pool):
+        self._pool = pool
+        self._conn = pool.getconn()
+        try:
+            self._conn.autocommit = False
+        except Exception:
+            pass
+
+    def execute(self, sql, params=None):
+        s = sql.strip().upper()
+        if s.startswith("BEGIN") or s.startswith("PRAGMA"):
+            return _DummyCur()
+        if s == "COMMIT":
+            try: self._conn.commit()
+            except: pass
+            return _DummyCur()
+        if s == "ROLLBACK":
+            try: self._conn.rollback()
+            except: pass
+            return _DummyCur()
+
+        sql2 = sql.replace("?", "%s")
+        cur = self._conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+        cur.execute(sql2, params or ())
+        return _WrapCur(cur)
+
+    def executescript(self, script):
+        cur = self._conn.cursor()
+        for stmt in script.split(";"):
+            stmt = stmt.strip()
+            if not stmt:
+                continue
+            u = stmt.upper()
+            if u.startswith("PRAGMA"):
+                continue
+            stmt2 = stmt.replace("?", "%s")
+            try:
+                cur.execute(stmt2)
+                self._conn.commit()
+            except Exception as e:
+                err = str(e).lower()
+                if "already exists" in err or "duplicate" in err:
+                    try: self._conn.rollback()
+                    except: pass
+                    continue
+                print(f"[executescript] {e} | {stmt[:120]}")
+                try: self._conn.rollback()
+                except: pass
+
+    def commit(self):
+        try: self._conn.commit()
+        except: pass
+
+    def rollback(self):
+        try: self._conn.rollback()
+        except: pass
+
+    def close(self):
+        try:
+            self._pool.putconn(self._conn)
+        except Exception:
+            try: self._conn.close()
+            except: pass
+
+
+def db():
+    return PgConn(get_pool())
+
+
+def _col(conn, t, c):
+    try:
+        r = conn.execute(
+            "SELECT column_name FROM information_schema.columns WHERE table_name=%s AND column_name=%s",
+            (t, c),
+        ).fetchone()
+        return bool(r)
+    except Exception:
+        return False
+
 
 def init_db():
     conn = db()
     try:
         conn.executescript("""
         CREATE TABLE IF NOT EXISTS users (
-            user_id INTEGER PRIMARY KEY, username TEXT DEFAULT '', first_name TEXT DEFAULT '', last_name TEXT DEFAULT '',
-            balance REAL DEFAULT 0, total_earned REAL DEFAULT 0, total_withdrawn REAL DEFAULT 0,
-            referral_earnings REAL DEFAULT 0, daily_earnings REAL DEFAULT 0, task_earnings REAL DEFAULT 0, admin_credits REAL DEFAULT 0,
-            verified INTEGER DEFAULT 0, banned INTEGER DEFAULT 0, ban_reason TEXT DEFAULT '',
-            referred_by INTEGER, referral_paid INTEGER DEFAULT 0, daily_last_claim INTEGER DEFAULT 0,
-            wallet_type TEXT, wallet_number TEXT, wallet_suspicious INTEGER DEFAULT 0,
-            risk_score INTEGER DEFAULT 0, risk_flags TEXT DEFAULT '', device_hash TEXT DEFAULT '', ip_hash TEXT DEFAULT '',
-            captcha_passed INTEGER DEFAULT 0, multi_flag INTEGER DEFAULT 0, is_test INTEGER DEFAULT 0,
-            created_at INTEGER, updated_at INTEGER, last_active INTEGER DEFAULT 0
+            user_id BIGINT PRIMARY KEY,
+            username TEXT DEFAULT '',
+            first_name TEXT DEFAULT '',
+            last_name TEXT DEFAULT '',
+            balance DOUBLE PRECISION DEFAULT 0,
+            total_earned DOUBLE PRECISION DEFAULT 0,
+            total_withdrawn DOUBLE PRECISION DEFAULT 0,
+            referral_earnings DOUBLE PRECISION DEFAULT 0,
+            daily_earnings DOUBLE PRECISION DEFAULT 0,
+            task_earnings DOUBLE PRECISION DEFAULT 0,
+            admin_credits DOUBLE PRECISION DEFAULT 0,
+            verified INTEGER DEFAULT 0,
+            banned INTEGER DEFAULT 0,
+            ban_reason TEXT DEFAULT '',
+            referred_by BIGINT,
+            referral_paid INTEGER DEFAULT 0,
+            daily_last_claim INTEGER DEFAULT 0,
+            wallet_type TEXT,
+            wallet_number TEXT,
+            wallet_suspicious INTEGER DEFAULT 0,
+            risk_score INTEGER DEFAULT 0,
+            risk_flags TEXT DEFAULT '',
+            device_hash TEXT DEFAULT '',
+            ip_hash TEXT DEFAULT '',
+            captcha_passed INTEGER DEFAULT 0,
+            multi_flag INTEGER DEFAULT 0,
+            is_test INTEGER DEFAULT 0,
+            created_at INTEGER,
+            updated_at INTEGER,
+            last_active INTEGER DEFAULT 0
         );
         CREATE TABLE IF NOT EXISTS captcha_sessions (
-            token TEXT PRIMARY KEY, user_id INTEGER, question TEXT, answer TEXT,
-            attempts INTEGER DEFAULT 0, created_at INTEGER, expires_at INTEGER);
+            token TEXT PRIMARY KEY,
+            user_id BIGINT,
+            question TEXT,
+            answer TEXT,
+            attempts INTEGER DEFAULT 0,
+            created_at INTEGER,
+            expires_at INTEGER
+        );
         CREATE TABLE IF NOT EXISTS transactions (
-            id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER, type TEXT, amount REAL,
-            balance_before REAL, balance_after REAL, description TEXT DEFAULT '', reference_id TEXT DEFAULT '',
-            admin_id INTEGER, created_at INTEGER);
+            id BIGSERIAL PRIMARY KEY,
+            user_id BIGINT,
+            type TEXT,
+            amount DOUBLE PRECISION,
+            balance_before DOUBLE PRECISION,
+            balance_after DOUBLE PRECISION,
+            description TEXT DEFAULT '',
+            reference_id TEXT DEFAULT '',
+            admin_id BIGINT,
+            created_at INTEGER
+        );
         CREATE TABLE IF NOT EXISTS withdrawals (
-            id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER, amount REAL,
-            wallet_type TEXT, wallet_number TEXT, status TEXT DEFAULT 'pending',
-            risk_status TEXT DEFAULT 'normal', admin_id INTEGER, rejection_reason TEXT DEFAULT '',
-            created_at INTEGER, reviewed_at INTEGER);
+            id BIGSERIAL PRIMARY KEY,
+            user_id BIGINT,
+            amount DOUBLE PRECISION,
+            wallet_type TEXT,
+            wallet_number TEXT,
+            status TEXT DEFAULT 'pending',
+            risk_status TEXT DEFAULT 'normal',
+            admin_id BIGINT,
+            rejection_reason TEXT DEFAULT '',
+            created_at INTEGER,
+            reviewed_at INTEGER
+        );
         CREATE TABLE IF NOT EXISTS tasks (
-            id INTEGER PRIMARY KEY AUTOINCREMENT, title TEXT, description TEXT DEFAULT '',
-            reward REAL DEFAULT 0, url TEXT DEFAULT '', proof_type TEXT DEFAULT 'photo',
-            active INTEGER DEFAULT 1, created_at INTEGER, created_by INTEGER);
+            id BIGSERIAL PRIMARY KEY,
+            title TEXT,
+            description TEXT DEFAULT '',
+            reward DOUBLE PRECISION DEFAULT 0,
+            url TEXT DEFAULT '',
+            proof_type TEXT DEFAULT 'photo',
+            active INTEGER DEFAULT 1,
+            created_at INTEGER,
+            created_by BIGINT
+        );
         CREATE TABLE IF NOT EXISTS task_submissions (
-            id INTEGER PRIMARY KEY AUTOINCREMENT, task_id INTEGER, user_id INTEGER,
-            proof_text TEXT DEFAULT '', proof_image TEXT DEFAULT '', status TEXT DEFAULT 'pending',
-            admin_id INTEGER, rejection_reason TEXT DEFAULT '', created_at INTEGER, reviewed_at INTEGER);
+            id BIGSERIAL PRIMARY KEY,
+            task_id BIGINT,
+            user_id BIGINT,
+            proof_text TEXT DEFAULT '',
+            proof_image TEXT DEFAULT '',
+            status TEXT DEFAULT 'pending',
+            admin_id BIGINT,
+            rejection_reason TEXT DEFAULT '',
+            created_at INTEGER,
+            reviewed_at INTEGER
+        );
         CREATE TABLE IF NOT EXISTS required_channels (
-            id INTEGER PRIMARY KEY AUTOINCREMENT, username TEXT UNIQUE, name TEXT, url TEXT,
-            active INTEGER DEFAULT 1, sort_order INTEGER DEFAULT 0, created_at INTEGER, updated_at INTEGER);
-        CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT);
+            id BIGSERIAL PRIMARY KEY,
+            username TEXT UNIQUE,
+            name TEXT,
+            url TEXT,
+            active INTEGER DEFAULT 1,
+            sort_order INTEGER DEFAULT 0,
+            created_at INTEGER,
+            updated_at INTEGER
+        );
+        CREATE TABLE IF NOT EXISTS settings (
+            key TEXT PRIMARY KEY,
+            value TEXT
+        );
         CREATE TABLE IF NOT EXISTS fraud_events (
-            id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER, event_type TEXT,
-            risk_score INTEGER DEFAULT 0, details TEXT DEFAULT '', created_at INTEGER);
+            id BIGSERIAL PRIMARY KEY,
+            user_id BIGINT,
+            event_type TEXT,
+            risk_score INTEGER DEFAULT 0,
+            details TEXT DEFAULT '',
+            created_at INTEGER
+        );
         CREATE TABLE IF NOT EXISTS admin_logs (
-            id INTEGER PRIMARY KEY AUTOINCREMENT, admin_id INTEGER, action TEXT,
-            target TEXT DEFAULT '', before_value TEXT DEFAULT '', after_value TEXT DEFAULT '', created_at INTEGER);
+            id BIGSERIAL PRIMARY KEY,
+            admin_id BIGINT,
+            action TEXT,
+            target TEXT DEFAULT '',
+            before_value TEXT DEFAULT '',
+            after_value TEXT DEFAULT '',
+            created_at INTEGER
+        );
         CREATE INDEX IF NOT EXISTS idx_tx_u ON transactions(user_id);
         CREATE INDEX IF NOT EXISTS idx_wd_s ON withdrawals(status);
         CREATE INDEX IF NOT EXISTS idx_ref ON users(referred_by);
         """)
-        for c, ddl in {"multi_flag":"INTEGER DEFAULT 0","is_test":"INTEGER DEFAULT 0","last_name":"TEXT DEFAULT ''","device_hash":"TEXT DEFAULT ''","ip_hash":"TEXT DEFAULT ''","risk_score":"INTEGER DEFAULT 0","risk_flags":"TEXT DEFAULT ''"}.items():
-            if not _col(conn, "users", c): conn.execute(f"ALTER TABLE users ADD COLUMN {c} {ddl}")
-        if conn.execute("SELECT COUNT(*) c FROM required_channels").fetchone()["c"] == 0:
+
+        # Migration-safe columns
+        for c, ddl in {
+            "multi_flag":"INTEGER DEFAULT 0","is_test":"INTEGER DEFAULT 0",
+            "last_name":"TEXT DEFAULT ''","device_hash":"TEXT DEFAULT ''",
+            "ip_hash":"TEXT DEFAULT ''","risk_score":"INTEGER DEFAULT 0",
+            "risk_flags":"TEXT DEFAULT ''"
+        }.items():
+            if not _col(conn, "users", c):
+                try:
+                    conn.execute(f"ALTER TABLE users ADD COLUMN {c} {ddl}")
+                    conn.commit()
+                except Exception as e:
+                    print(f"[migration] {e}")
+
+        if int(conn.execute("SELECT COUNT(*) AS c FROM required_channels").fetchone()["c"]) == 0:
             now = int(time.time())
             for i, c in enumerate(DEFAULT_CHANNELS):
-                conn.execute("INSERT OR IGNORE INTO required_channels(username,name,url,active,sort_order,created_at,updated_at) VALUES(?,?,?,?,?,?,?)",
-                             (c["username"], c["name"], c["url"], 1, i, now, now))
-        for k, v in {"daily_reward":DEFAULT_DAILY,"referral_reward":DEFAULT_REFERRAL,"minimum_withdrawal":DEFAULT_MIN_WITHDRAW,"maintenance_mode":"0"}.items():
-            conn.execute("INSERT OR IGNORE INTO settings(key,value) VALUES(?,?)", (k, str(v)))
+                try:
+                    conn.execute(
+                        "INSERT INTO required_channels(username,name,url,active,sort_order,created_at,updated_at) VALUES(?,?,?,?,?,?,?) ON CONFLICT (username) DO NOTHING",
+                        (c["username"], c["name"], c["url"], 1, i, now, now),
+                    )
+                except Exception as e:
+                    print(f"[seed channels] {e}")
+            conn.commit()
+
+        for k, v in {
+            "daily_reward": DEFAULT_DAILY,
+            "referral_reward": DEFAULT_REFERRAL,
+            "minimum_withdrawal": DEFAULT_MIN_WITHDRAW,
+            "maintenance_mode": "0",
+        }.items():
+            try:
+                conn.execute(
+                    "INSERT INTO settings(key,value) VALUES(?,?) ON CONFLICT (key) DO NOTHING",
+                    (k, str(v)),
+                )
+            except Exception as e:
+                print(f"[seed settings] {e}")
         conn.commit()
-    finally: conn.close()
+    finally:
+        conn.close()
+
 
 def get_setting(k, d=None, kind=float):
     conn = db()
@@ -124,14 +342,20 @@ def get_setting(k, d=None, kind=float):
         except: return d
     finally: conn.close()
 
+
 def set_setting(k, v):
     conn = db()
     try:
-        conn.execute("INSERT INTO settings(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value", (k, str(v)))
+        conn.execute(
+            "INSERT INTO settings(key,value) VALUES(?,?) ON CONFLICT (key) DO UPDATE SET value=excluded.value",
+            (k, str(v)),
+        )
         conn.commit()
     finally: conn.close()
 
+
 def _r2(x): return round(float(x) + 1e-9, 2)
+
 
 def is_payment_day():
     try:
@@ -141,50 +365,61 @@ def is_payment_day():
     except:
         return datetime.utcnow().weekday() != 6
 
+
 def credit(uid, amount, kind, desc="", ref="", admin_id=None):
     amount = _r2(amount)
     if amount <= 0: return False, "Invalid"
     conn = db()
     try:
-        conn.execute("BEGIN IMMEDIATE")
         r = conn.execute("SELECT balance FROM users WHERE user_id=?", (uid,)).fetchone()
-        if not r: conn.execute("ROLLBACK"); return False, "No user"
+        if not r: return False, "No user"
         before = float(r["balance"]); after = _r2(before + amount)
-        conn.execute("UPDATE users SET balance=?, total_earned=ROUND(total_earned+?,8), updated_at=? WHERE user_id=?",
-                     (after, amount, int(time.time()), uid))
+        conn.execute(
+            "UPDATE users SET balance=?, total_earned=ROUND((total_earned+?)::numeric,8), updated_at=? WHERE user_id=?",
+            (after, amount, int(time.time()), uid),
+        )
         col = {"daily":"daily_earnings","referral":"referral_earnings","task":"task_earnings","admin":"admin_credits"}.get(kind)
-        if col: conn.execute(f"UPDATE users SET {col}=ROUND({col}+?,8) WHERE user_id=?", (amount, uid))
-        conn.execute("INSERT INTO transactions(user_id,type,amount,balance_before,balance_after,description,reference_id,admin_id,created_at) VALUES(?,?,?,?,?,?,?,?,?)",
-                     (uid, kind.upper()+"_CREDIT", amount, before, after, desc, str(ref), admin_id, int(time.time())))
-        conn.execute("COMMIT")
+        if col:
+            conn.execute(f"UPDATE users SET {col}=ROUND(({col}+?)::numeric,8) WHERE user_id=?", (amount, uid))
+        conn.execute(
+            "INSERT INTO transactions(user_id,type,amount,balance_before,balance_after,description,reference_id,admin_id,created_at) VALUES(?,?,?,?,?,?,?,?,?)",
+            (uid, kind.upper()+"_CREDIT", amount, before, after, desc, str(ref), admin_id, int(time.time())),
+        )
+        conn.commit()
         return True, after
     except Exception as e:
-        try: conn.execute("ROLLBACK")
+        try: conn.rollback()
         except: pass
         return False, str(e)
-    finally: conn.close()
+    finally:
+        conn.close()
+
 
 def debit(uid, amount, kind, desc="", ref="", admin_id=None):
     amount = _r2(amount)
     if amount <= 0: return False, "Invalid"
     conn = db()
     try:
-        conn.execute("BEGIN IMMEDIATE")
         r = conn.execute("SELECT balance FROM users WHERE user_id=?", (uid,)).fetchone()
-        if not r: conn.execute("ROLLBACK"); return False, "No user"
+        if not r: return False, "No user"
         before = float(r["balance"])
-        if before < amount: conn.execute("ROLLBACK"); return False, "Insufficient"
+        if before < amount:
+            conn.rollback(); return False, "Insufficient"
         after = _r2(before - amount)
         conn.execute("UPDATE users SET balance=?, updated_at=? WHERE user_id=?", (after, int(time.time()), uid))
-        conn.execute("INSERT INTO transactions(user_id,type,amount,balance_before,balance_after,description,reference_id,admin_id,created_at) VALUES(?,?,?,?,?,?,?,?,?)",
-                     (uid, kind.upper(), amount, before, after, desc, str(ref), admin_id, int(time.time())))
-        conn.execute("COMMIT")
+        conn.execute(
+            "INSERT INTO transactions(user_id,type,amount,balance_before,balance_after,description,reference_id,admin_id,created_at) VALUES(?,?,?,?,?,?,?,?,?)",
+            (uid, kind.upper(), amount, before, after, desc, str(ref), admin_id, int(time.time())),
+        )
+        conn.commit()
         return True, after
     except Exception as e:
-        try: conn.execute("ROLLBACK")
+        try: conn.rollback()
         except: pass
         return False, str(e)
-    finally: conn.close()
+    finally:
+        conn.close()
+
 
 def ensure_user(uid, username="", first_name="", last_name="", referred_by=None):
     now = int(time.time())
@@ -192,129 +427,171 @@ def ensure_user(uid, username="", first_name="", last_name="", referred_by=None)
     try:
         r = conn.execute("SELECT user_id, referred_by FROM users WHERE user_id=?", (uid,)).fetchone()
         if not r:
-            conn.execute("INSERT INTO users(user_id,username,first_name,last_name,referred_by,created_at,updated_at,last_active) VALUES(?,?,?,?,?,?,?,?)",
-                         (uid, username or "", first_name or "", last_name or "", referred_by, now, now, now))
+            conn.execute(
+                "INSERT INTO users(user_id,username,first_name,last_name,referred_by,created_at,updated_at,last_active) VALUES(?,?,?,?,?,?,?,?)",
+                (uid, username or "", first_name or "", last_name or "", referred_by, now, now, now),
+            )
         else:
-            conn.execute("UPDATE users SET username=?, first_name=?, last_name=?, last_active=?, updated_at=? WHERE user_id=?",
-                         (username or "", first_name or "", last_name or "", now, now, uid))
+            conn.execute(
+                "UPDATE users SET username=?, first_name=?, last_name=?, last_active=?, updated_at=? WHERE user_id=?",
+                (username or "", first_name or "", last_name or "", now, now, uid),
+            )
             if referred_by and not r["referred_by"] and referred_by != uid:
                 conn.execute("UPDATE users SET referred_by=? WHERE user_id=?", (referred_by, uid))
         conn.commit()
-    finally: conn.close()
+    finally:
+        conn.close()
+
 
 def get_user(uid):
     conn = db()
-    try: return conn.execute("SELECT * FROM users WHERE user_id=?", (uid,)).fetchone()
-    finally: conn.close()
+    try:
+        return conn.execute("SELECT * FROM users WHERE user_id=?", (uid,)).fetchone()
+    finally:
+        conn.close()
+
 
 def is_admin(uid): return int(uid) in ADMIN_IDS
 def is_banned(uid):
     u = get_user(uid); return bool(u and u["banned"])
 
+
 def log_admin(aid, action, target="", before="", after=""):
     conn = db()
     try:
-        conn.execute("INSERT INTO admin_logs(admin_id,action,target,before_value,after_value,created_at) VALUES(?,?,?,?,?,?)",
-                     (aid, action, str(target), str(before), str(after), int(time.time())))
+        conn.execute(
+            "INSERT INTO admin_logs(admin_id,action,target,before_value,after_value,created_at) VALUES(?,?,?,?,?,?)",
+            (aid, action, str(target), str(before), str(after), int(time.time())),
+        )
         conn.commit()
-    finally: conn.close()
+    finally:
+        conn.close()
+
 
 def add_risk(uid, pts, flag, details=""):
     conn = db()
     try:
-        conn.execute("BEGIN IMMEDIATE")
         r = conn.execute("SELECT risk_score, risk_flags FROM users WHERE user_id=?", (uid,)).fetchone()
-        if not r: conn.execute("ROLLBACK"); return
+        if not r:
+            return
         ns = min(999, int(r["risk_score"] or 0) + int(pts))
         flags = [f for f in (r["risk_flags"] or "").split(",") if f]
         if flag and flag not in flags: flags.append(flag)
-        conn.execute("UPDATE users SET risk_score=?, risk_flags=?, updated_at=? WHERE user_id=?",
-                     (ns, ",".join(flags), int(time.time()), uid))
-        conn.execute("INSERT INTO fraud_events(user_id,event_type,risk_score,details,created_at) VALUES(?,?,?,?,?)",
-                     (uid, flag, pts, details, int(time.time())))
-        conn.execute("COMMIT")
-    except:
-        try: conn.execute("ROLLBACK")
+        conn.execute(
+            "UPDATE users SET risk_score=?, risk_flags=?, updated_at=? WHERE user_id=?",
+            (ns, ",".join(flags), int(time.time()), uid),
+        )
+        conn.execute(
+            "INSERT INTO fraud_events(user_id,event_type,risk_score,details,created_at) VALUES(?,?,?,?,?)",
+            (uid, flag, pts, details, int(time.time())),
+        )
+        conn.commit()
+    except Exception as e:
+        try: conn.rollback()
         except: pass
-    finally: conn.close()
+    finally:
+        conn.close()
+
 
 def get_referral_count(uid):
     conn = db()
-    try: return int(conn.execute("SELECT COUNT(*) c FROM users WHERE referred_by=? AND referral_paid=1", (uid,)).fetchone()["c"])
-    finally: conn.close()
+    try:
+        return int(conn.execute(
+            "SELECT COUNT(*) AS c FROM users WHERE referred_by=? AND referral_paid=1", (uid,)
+        ).fetchone()["c"])
+    finally:
+        conn.close()
+
 
 def get_all_referrals(uid):
     conn = db()
     try:
-        return conn.execute("SELECT user_id,username,first_name,last_name,verified,referral_paid,created_at FROM users WHERE referred_by=? ORDER BY user_id DESC",
-                            (uid,)).fetchall()
-    finally: conn.close()
+        return conn.execute(
+            "SELECT user_id,username,first_name,last_name,verified,referral_paid,created_at FROM users WHERE referred_by=? ORDER BY user_id DESC",
+            (uid,),
+        ).fetchall()
+    finally:
+        conn.close()
+
 
 def pay_referral_if_eligible(uid):
     conn = db()
     try:
-        conn.execute("BEGIN IMMEDIATE")
-        child = conn.execute("SELECT referred_by, verified, referral_paid, device_hash, ip_hash, created_at FROM users WHERE user_id=?", (uid,)).fetchone()
+        child = conn.execute(
+            "SELECT referred_by, verified, referral_paid, device_hash, ip_hash, created_at FROM users WHERE user_id=?",
+            (uid,),
+        ).fetchone()
         if not child or not child["verified"] or child["referral_paid"]:
-            conn.execute("ROLLBACK"); return None, None
+            return None, None
         ref_id = child["referred_by"]
         if not ref_id or ref_id == uid:
-            conn.execute("UPDATE users SET referral_paid=1 WHERE user_id=?", (uid,)); conn.execute("COMMIT"); return None, None
+            conn.execute("UPDATE users SET referral_paid=1 WHERE user_id=?", (uid,))
+            conn.commit(); return None, None
         ref = conn.execute("SELECT banned, device_hash FROM users WHERE user_id=?", (ref_id,)).fetchone()
         if not ref or ref["banned"]:
-            conn.execute("UPDATE users SET referral_paid=1 WHERE user_id=?", (uid,)); conn.execute("COMMIT"); return None, None
+            conn.execute("UPDATE users SET referral_paid=1 WHERE user_id=?", (uid,))
+            conn.commit(); return None, None
+
         multi = False; reason = ""
         if child["device_hash"] and ref["device_hash"] and child["device_hash"] == ref["device_hash"]:
             multi = True; reason = "Same device as referrer"
+
         reward = get_setting("referral_reward", DEFAULT_REFERRAL, kind=float)
         cur = conn.execute("UPDATE users SET referral_paid=1 WHERE user_id=? AND referral_paid=0", (uid,))
-        if cur.rowcount != 1:
-            conn.execute("ROLLBACK"); return None, None
+        if cur._cur.rowcount != 1:
+            conn.rollback(); return None, None
         if multi:
             conn.execute("UPDATE users SET multi_flag=1, risk_score=risk_score+30 WHERE user_id IN (?,?)", (uid, ref_id))
-        conn.execute("COMMIT")
-    except:
-        try: conn.execute("ROLLBACK")
+        conn.commit()
+    except Exception as e:
+        try: conn.rollback()
         except: pass
         return None, None
-    finally: conn.close()
+    finally:
+        conn.close()
+
     ok, _ = credit(ref_id, reward, "referral", f"Referral reward — user {uid}", ref=str(uid))
     return (reward if ok else None), ({"multi": True, "reason": reason, "referrer": ref_id} if multi else None)
+
 
 def claim_daily(uid):
     conn = db()
     try:
-        conn.execute("BEGIN IMMEDIATE")
         r = conn.execute("SELECT banned, verified, daily_last_claim FROM users WHERE user_id=?", (uid,)).fetchone()
-        if not r: conn.execute("ROLLBACK"); return False, {"error":"user_not_found"}
-        if r["banned"]: conn.execute("ROLLBACK"); return False, {"error":"banned"}
-        if not r["verified"]: conn.execute("ROLLBACK"); return False, {"error":"not_verified"}
+        if not r: return False, {"error": "user_not_found"}
+        if r["banned"]: return False, {"error": "banned"}
+        if not r["verified"]: return False, {"error": "not_verified"}
         last = int(r["daily_last_claim"] or 0); now = int(time.time())
         if last and (now - last) < 86400:
-            conn.execute("ROLLBACK"); return False, {"error":"cooldown","remaining":86400-(now-last)}
+            return False, {"error": "cooldown", "remaining": 86400 - (now - last)}
         reward = get_setting("daily_reward", DEFAULT_DAILY, kind=float)
-        cur = conn.execute("UPDATE users SET daily_last_claim=? WHERE user_id=? AND (daily_last_claim=0 OR ?-daily_last_claim >= 86400)",
-                           (now, uid, now))
-        if cur.rowcount != 1:
-            conn.execute("ROLLBACK"); return False, {"error":"cooldown","remaining":86400}
-        conn.execute("COMMIT")
-    except:
-        try: conn.execute("ROLLBACK")
+        cur = conn.execute(
+            "UPDATE users SET daily_last_claim=? WHERE user_id=? AND (daily_last_claim=0 OR ?-daily_last_claim >= 86400)",
+            (now, uid, now),
+        )
+        if cur._cur.rowcount != 1:
+            conn.rollback(); return False, {"error": "cooldown", "remaining": 86400}
+        conn.commit()
+    except Exception:
+        try: conn.rollback()
         except: pass
-        return False, {"error":"server_error"}
-    finally: conn.close()
+        return False, {"error": "server_error"}
+    finally:
+        conn.close()
     ok, bal = credit(uid, reward, "daily", "Daily bonus")
-    if not ok: return False, {"error":"credit_failed"}
-    return True, {"reward":reward,"balance":bal}
+    if not ok: return False, {"error": "credit_failed"}
+    return True, {"reward": reward, "balance": bal}
+
 
 def daily_status(uid):
     u = get_user(uid)
-    if not u: return {"available":False,"remaining":0,"reward":0}
+    if not u: return {"available": False, "remaining": 0, "reward": 0}
     last = int(u["daily_last_claim"] or 0); now = int(time.time())
     reward = get_setting("daily_reward", DEFAULT_DAILY, kind=float)
     if not last or (now - last) >= 86400:
-        return {"available":True,"remaining":0,"reward":reward}
-    return {"available":False,"remaining":86400-(now-last),"reward":reward}
+        return {"available": True, "remaining": 0, "reward": reward}
+    return {"available": False, "remaining": 86400 - (now - last), "reward": reward}
+
 
 def validate_wallet(wt, num):
     wt = (wt or "").strip().lower(); num = (num or "").strip()
@@ -326,19 +603,26 @@ def validate_wallet(wt, num):
         return True, "Telebirr"
     return False, "Invalid wallet type"
 
+
 def save_wallet(uid, wt, num):
     ok, res = validate_wallet(wt, num)
     if not ok: return False, res, False
     conn = db()
     try:
-        dup = conn.execute("SELECT COUNT(*) c FROM users WHERE wallet_number=? AND user_id!=?", (num, uid)).fetchone()["c"]
+        dup = int(conn.execute(
+            "SELECT COUNT(*) AS c FROM users WHERE wallet_number=? AND user_id!=?", (num, uid)
+        ).fetchone()["c"])
         susp = dup > 0
-        conn.execute("UPDATE users SET wallet_type=?, wallet_number=?, wallet_suspicious=?, updated_at=? WHERE user_id=?",
-                     (res, num, 1 if susp else 0, int(time.time()), uid))
+        conn.execute(
+            "UPDATE users SET wallet_type=?, wallet_number=?, wallet_suspicious=?, updated_at=? WHERE user_id=?",
+            (res, num, 1 if susp else 0, int(time.time()), uid),
+        )
         conn.commit()
-    finally: conn.close()
+    finally:
+        conn.close()
     if susp: add_risk(uid, 40, "duplicate_wallet", f"Shared with {dup} user(s)")
     return True, "Wallet saved", susp
+
 
 def create_withdrawal(uid, amount):
     amount = _r2(amount)
@@ -346,130 +630,179 @@ def create_withdrawal(uid, amount):
     if amount < minimum: return False, f"Minimum withdrawal is {minimum:.2f} ETB"
     conn = db()
     try:
-        conn.execute("BEGIN IMMEDIATE")
-        u = conn.execute("SELECT banned, wallet_type, wallet_number, balance, risk_score, multi_flag FROM users WHERE user_id=?", (uid,)).fetchone()
-        if not u: conn.execute("ROLLBACK"); return False, "User not found"
-        if u["banned"]: conn.execute("ROLLBACK"); return False, "Account banned"
-        if not u["wallet_type"] or not u["wallet_number"]: conn.execute("ROLLBACK"); return False, "Save wallet first"
-        if float(u["balance"]) < amount: conn.execute("ROLLBACK"); return False, "Insufficient balance"
-        pending = conn.execute("SELECT id FROM withdrawals WHERE user_id=? AND status='pending' LIMIT 1", (uid,)).fetchone()
-        if pending: conn.execute("ROLLBACK"); return False, "You have a pending withdrawal"
+        u = conn.execute(
+            "SELECT banned, wallet_type, wallet_number, balance, risk_score, multi_flag FROM users WHERE user_id=?",
+            (uid,),
+        ).fetchone()
+        if not u: return False, "User not found"
+        if u["banned"]: return False, "Account banned"
+        if not u["wallet_type"] or not u["wallet_number"]: return False, "Save wallet first"
+        if float(u["balance"]) < amount: return False, "Insufficient balance"
+        pending = conn.execute(
+            "SELECT id FROM withdrawals WHERE user_id=? AND status='pending' LIMIT 1", (uid,)
+        ).fetchone()
+        if pending: return False, "You have a pending withdrawal"
         risk_status = "flagged" if (u["risk_score"] or 0) >= 50 or u["multi_flag"] else "normal"
-        cur = conn.execute("INSERT INTO withdrawals(user_id,amount,wallet_type,wallet_number,status,risk_status,created_at) VALUES(?,?,?,?,?,?,?)",
-                           (uid, amount, u["wallet_type"], u["wallet_number"], "pending", risk_status, int(time.time())))
-        wid = cur.lastrowid
-        conn.execute("COMMIT")
-    except:
-        try: conn.execute("ROLLBACK")
+        cur = conn.execute(
+            "INSERT INTO withdrawals(user_id,amount,wallet_type,wallet_number,status,risk_status,created_at) VALUES(?,?,?,?,?,?,?) RETURNING id",
+            (uid, amount, u["wallet_type"], u["wallet_number"], "pending", risk_status, int(time.time())),
+        )
+        wid = int(cur.fetchone()["id"])
+        conn.commit()
+    except Exception as e:
+        try: conn.rollback()
         except: pass
         return False, "Server error"
-    finally: conn.close()
+    finally:
+        conn.close()
+
     ok, _ = debit(uid, amount, "withdrawal_hold", f"Withdrawal #{wid}")
     if not ok:
         conn = db()
-        try: conn.execute("DELETE FROM withdrawals WHERE id=?", (wid,)); conn.commit()
+        try:
+            conn.execute("DELETE FROM withdrawals WHERE id=?", (wid,))
+            conn.commit()
         finally: conn.close()
         return False, "Balance error"
     return True, {"withdrawal_id": wid, "amount": amount, "risk_status": risk_status}
 
+
 def approve_withdrawal(wid, aid):
     conn = db()
     try:
-        conn.execute("BEGIN IMMEDIATE")
         w = conn.execute("SELECT * FROM withdrawals WHERE id=? AND status='pending'", (wid,)).fetchone()
-        if not w: conn.execute("ROLLBACK"); return False, "Not pending"
-        conn.execute("UPDATE withdrawals SET status='approved', admin_id=?, reviewed_at=? WHERE id=?", (aid, int(time.time()), wid))
-        conn.execute("UPDATE users SET total_withdrawn=ROUND(total_withdrawn+?,8) WHERE user_id=?", (float(w["amount"]), w["user_id"]))
-        conn.execute("COMMIT")
+        if not w: return False, "Not pending"
+        conn.execute(
+            "UPDATE withdrawals SET status='approved', admin_id=?, reviewed_at=? WHERE id=?",
+            (aid, int(time.time()), wid),
+        )
+        conn.execute(
+            "UPDATE users SET total_withdrawn=ROUND((total_withdrawn+?)::numeric,8) WHERE user_id=?",
+            (float(w["amount"]), w["user_id"]),
+        )
+        conn.commit()
         return True, dict(w)
-    except:
-        try: conn.execute("ROLLBACK")
+    except Exception:
+        try: conn.rollback()
         except: pass
         return False, "Error"
-    finally: conn.close()
+    finally:
+        conn.close()
+
 
 def reject_withdrawal(wid, aid, reason=""):
     conn = db()
     try:
-        conn.execute("BEGIN IMMEDIATE")
         w = conn.execute("SELECT * FROM withdrawals WHERE id=? AND status='pending'", (wid,)).fetchone()
-        if not w: conn.execute("ROLLBACK"); return False, "Not pending"
-        conn.execute("UPDATE withdrawals SET status='rejected', admin_id=?, reviewed_at=?, rejection_reason=? WHERE id=?",
-                     (aid, int(time.time()), reason or "", wid))
-        conn.execute("COMMIT")
-    except:
-        try: conn.execute("ROLLBACK")
+        if not w: return False, "Not pending"
+        conn.execute(
+            "UPDATE withdrawals SET status='rejected', admin_id=?, reviewed_at=?, rejection_reason=? WHERE id=?",
+            (aid, int(time.time()), reason or "", wid),
+        )
+        conn.commit()
+    except Exception:
+        try: conn.rollback()
         except: pass
         return False, "Error"
-    finally: conn.close()
+    finally:
+        conn.close()
     credit(int(w["user_id"]), float(w["amount"]), "admin", f"Withdrawal #{wid} refund", admin_id=aid)
     return True, dict(w)
+
 
 def get_channels(active_only=True):
     conn = db()
     try:
         sql = "SELECT * FROM required_channels " + ("WHERE active=1 " if active_only else "") + "ORDER BY sort_order ASC, id ASC"
         return conn.execute(sql).fetchall()
-    finally: conn.close()
+    finally:
+        conn.close()
+
 
 def get_tasks(active_only=True):
     conn = db()
     try:
         sql = "SELECT * FROM tasks " + ("WHERE active=1 " if active_only else "") + "ORDER BY id DESC"
         return conn.execute(sql).fetchall()
-    finally: conn.close()
+    finally:
+        conn.close()
+
 
 def get_user_task_status(uid, tid):
     conn = db()
-    try: return conn.execute("SELECT * FROM task_submissions WHERE user_id=? AND task_id=? ORDER BY id DESC LIMIT 1", (uid, tid)).fetchone()
-    finally: conn.close()
+    try:
+        return conn.execute(
+            "SELECT * FROM task_submissions WHERE user_id=? AND task_id=? ORDER BY id DESC LIMIT 1",
+            (uid, tid),
+        ).fetchone()
+    finally:
+        conn.close()
+
 
 def submit_task(uid, tid, pt="", pi=""):
     if not (pt or pi): return False, "Proof required"
     conn = db()
     try:
-        conn.execute("BEGIN IMMEDIATE")
         t = conn.execute("SELECT * FROM tasks WHERE id=? AND active=1", (tid,)).fetchone()
-        if not t: conn.execute("ROLLBACK"); return False, "Task not found"
-        last = conn.execute("SELECT status FROM task_submissions WHERE user_id=? AND task_id=? ORDER BY id DESC LIMIT 1", (uid, tid)).fetchone()
-        if last and last["status"] == "pending": conn.execute("ROLLBACK"); return False, "Previous submission pending"
-        if last and last["status"] == "approved": conn.execute("ROLLBACK"); return False, "Already approved"
-        cur = conn.execute("INSERT INTO task_submissions(task_id,user_id,proof_text,proof_image,status,created_at) VALUES(?,?,?,?,?,?)",
-                           (tid, uid, pt[:2000], pi[:500], "pending", int(time.time())))
-        sid = cur.lastrowid
-        conn.execute("COMMIT")
+        if not t: return False, "Task not found"
+        last = conn.execute(
+            "SELECT status FROM task_submissions WHERE user_id=? AND task_id=? ORDER BY id DESC LIMIT 1",
+            (uid, tid),
+        ).fetchone()
+        if last and last["status"] == "pending": return False, "Previous submission pending"
+        if last and last["status"] == "approved": return False, "Already approved"
+        cur = conn.execute(
+            "INSERT INTO task_submissions(task_id,user_id,proof_text,proof_image,status,created_at) VALUES(?,?,?,?,?,?) RETURNING id",
+            (tid, uid, pt[:2000], pi[:500], "pending", int(time.time())),
+        )
+        sid = int(cur.fetchone()["id"])
+        conn.commit()
         return True, {"submission_id": sid, "task": dict(t)}
-    except:
-        try: conn.execute("ROLLBACK")
+    except Exception:
+        try: conn.rollback()
         except: pass
         return False, "Error"
-    finally: conn.close()
+    finally:
+        conn.close()
+
 
 def approve_task_submission(sid, aid):
     conn = db()
     try:
-        conn.execute("BEGIN IMMEDIATE")
-        s = conn.execute("SELECT ts.*, t.reward, t.title FROM task_submissions ts JOIN tasks t ON t.id=ts.task_id WHERE ts.id=? AND ts.status='pending'", (sid,)).fetchone()
-        if not s: conn.execute("ROLLBACK"); return False, "Not pending"
-        conn.execute("UPDATE task_submissions SET status='approved', admin_id=?, reviewed_at=? WHERE id=?", (aid, int(time.time()), sid))
-        conn.execute("COMMIT")
-    except:
-        try: conn.execute("ROLLBACK")
+        s = conn.execute(
+            "SELECT ts.*, t.reward, t.title FROM task_submissions ts JOIN tasks t ON t.id=ts.task_id WHERE ts.id=? AND ts.status='pending'",
+            (sid,),
+        ).fetchone()
+        if not s: return False, "Not pending"
+        conn.execute(
+            "UPDATE task_submissions SET status='approved', admin_id=?, reviewed_at=? WHERE id=?",
+            (aid, int(time.time()), sid),
+        )
+        conn.commit()
+    except Exception:
+        try: conn.rollback()
         except: pass
         return False, "Error"
-    finally: conn.close()
+    finally:
+        conn.close()
     credit(int(s["user_id"]), float(s["reward"]), "task", f"Task: {s['title']}", ref=str(sid))
     return True, dict(s)
+
 
 def reject_task_submission(sid, aid, reason=""):
     conn = db()
     try:
-        conn.execute("UPDATE task_submissions SET status='rejected', admin_id=?, reviewed_at=?, rejection_reason=? WHERE id=? AND status='pending'",
-                     (aid, int(time.time()), reason or "", sid))
+        conn.execute(
+            "UPDATE task_submissions SET status='rejected', admin_id=?, reviewed_at=?, rejection_reason=? WHERE id=? AND status='pending'",
+            (aid, int(time.time()), reason or "", sid),
+        )
         conn.commit()
         return True
-    finally: conn.close()
+    finally:
+        conn.close()
 
+
+# ═══ TELEGRAM ═══
 async def tg(method, data=None):
     if not BOT_TOKEN: return {"ok": False}
     try:
@@ -479,21 +812,26 @@ async def tg(method, data=None):
             except: return {"ok": False}
     except: return {"ok": False}
 
+
 async def send(chat_id, text, kb=None):
     d = {"chat_id": chat_id, "text": text, "parse_mode": "HTML", "disable_web_page_preview": True}
     if kb: d["reply_markup"] = kb
     return await tg("sendMessage", d)
+
 
 async def send_photo(chat_id, photo_id, caption="", kb=None):
     d = {"chat_id": chat_id, "photo": photo_id, "caption": caption, "parse_mode": "HTML"}
     if kb: d["reply_markup"] = kb
     return await tg("sendPhoto", d)
 
+
 async def send_admin(text, kb=None):
     for aid in ADMIN_IDS: await send(aid, text, kb)
 
+
 async def send_admin_photo(photo_id, caption="", kb=None):
     for aid in ADMIN_IDS: await send_photo(aid, photo_id, caption, kb)
+
 
 async def check_channel_membership(uid, ch):
     r = await tg("getChatMember", {"chat_id": ch, "user_id": uid})
@@ -504,6 +842,7 @@ async def check_channel_membership(uid, ch):
     if st in {"member","administrator","creator"}: return True
     if st == "restricted" and r.get("result", {}).get("is_member") is True: return True
     return False
+
 
 async def check_all_channels_parallel(uid):
     chans = get_channels(active_only=True)
@@ -516,66 +855,79 @@ async def check_all_channels_parallel(uid):
     all_joined = all(x["joined"] for x in out) and len(out) > 0
     return all_joined, out
 
+
 async def verify_all_channels(uid):
     return await check_all_channels_parallel(uid)
+
 
 def make_captcha(uid):
     a = secrets.randbelow(8) + 3
     b = secrets.randbelow(8) + 2
     op = secrets.choice(["+","-"])
-    if op == "+": ans = a+b
+    if op == "+": ans = a + b
     else:
-        if a<b: a,b = b,a
-        ans = a-b
+        if a < b: a, b = b, a
+        ans = a - b
     q = f"{a} {op} {b} = ?"
     t = secrets.token_urlsafe(24)
     conn = db()
     try:
         conn.execute("DELETE FROM captcha_sessions WHERE user_id=?", (uid,))
-        conn.execute("INSERT INTO captcha_sessions(token,user_id,question,answer,attempts,created_at,expires_at) VALUES(?,?,?,?,?,?,?)",
-                     (t, uid, q, str(ans), 0, int(time.time()), int(time.time())+600))
+        conn.execute(
+            "INSERT INTO captcha_sessions(token,user_id,question,answer,attempts,created_at,expires_at) VALUES(?,?,?,?,?,?,?)",
+            (t, uid, q, str(ans), 0, int(time.time()), int(time.time()) + 600),
+        )
         conn.commit()
-    finally: conn.close()
+    finally:
+        conn.close()
     return t, q
+
 
 def verify_captcha(t, ans):
     conn = db()
     try:
-        conn.execute("BEGIN IMMEDIATE")
         r = conn.execute("SELECT * FROM captcha_sessions WHERE token=?", (t,)).fetchone()
-        if not r: conn.execute("ROLLBACK"); return False, "expired", None, None
+        if not r: return False, "expired", None, None
         if int(r["expires_at"]) < int(time.time()):
-            conn.execute("DELETE FROM captcha_sessions WHERE token=?", (t,)); conn.execute("COMMIT")
+            conn.execute("DELETE FROM captcha_sessions WHERE token=?", (t,))
+            conn.commit()
             return False, "expired", None, None
         if int(r["attempts"]) >= 5:
-            conn.execute("DELETE FROM captcha_sessions WHERE token=?", (t,)); conn.execute("COMMIT")
+            conn.execute("DELETE FROM captcha_sessions WHERE token=?", (t,))
+            conn.commit()
             return False, "too_many", None, None
         if str(r["answer"]).strip() != str(ans).strip():
             conn.execute("DELETE FROM captcha_sessions WHERE token=?", (t,))
-            conn.execute("COMMIT")
+            conn.commit()
             conn2 = db()
             try:
                 a = secrets.randbelow(8) + 3; b = secrets.randbelow(8) + 2
                 op = secrets.choice(["+","-"])
-                if op == "+": nans = a+b
+                if op == "+": nans = a + b
                 else:
-                    if a<b: a,b = b,a
-                    nans = a-b
+                    if a < b: a, b = b, a
+                    nans = a - b
                 nq = f"{a} {op} {b} = ?"
                 nt = secrets.token_urlsafe(24)
-                conn2.execute("INSERT INTO captcha_sessions(token,user_id,question,answer,attempts,created_at,expires_at) VALUES(?,?,?,?,?,?,?)",
-                              (nt, r["user_id"], nq, str(nans), 0, int(time.time()), int(time.time())+600))
+                conn2.execute(
+                    "INSERT INTO captcha_sessions(token,user_id,question,answer,attempts,created_at,expires_at) VALUES(?,?,?,?,?,?,?)",
+                    (nt, r["user_id"], nq, str(nans), 0, int(time.time()), int(time.time()) + 600),
+                )
                 conn2.commit()
-            finally: conn2.close()
+            finally:
+                conn2.close()
             return False, "wrong", nt, nq
         conn.execute("UPDATE users SET captcha_passed=1 WHERE user_id=?", (r["user_id"],))
         conn.execute("DELETE FROM captcha_sessions WHERE token=?", (t,))
-        conn.execute("COMMIT"); return True, "ok", None, None
-    except:
-        try: conn.execute("ROLLBACK")
+        conn.commit()
+        return True, "ok", None, None
+    except Exception:
+        try: conn.rollback()
         except: pass
         return False, "error", None, None
-    finally: conn.close()
+    finally:
+        conn.close()
+
 
 def parse_ref(text):
     parts = text.split(maxsplit=1)
@@ -585,9 +937,8 @@ def parse_ref(text):
     if p.isdigit(): return int(p)
     return None
 
-# ═══════════════════════════════════════════════════════════════
-# AMHARIC WELCOME (the ONLY Amharic)
-# ═══════════════════════════════════════════════════════════════
+
+# ═══ AMHARIC WELCOME (the ONLY Amharic) ═══
 WELCOME_MSG = (
     "⚡ <b>ወደ Mega Spark እንኳን በደህና መጡ</b>\n\n"
     "💰 ያግኙ እና ተግባሮችን ያጠናቅቁ\n"
@@ -610,16 +961,19 @@ def wd_kb(wid):
         [{"text": "🚫 Ban User", "callback_data": f"wdban:{wid}"}],
     ]}
 
+
 def sub_kb(sid):
     return {"inline_keyboard": [[
         {"text": "✅ Approve", "callback_data": f"tskok:{sid}"},
         {"text": "❌ Reject", "callback_data": f"tskno:{sid}"}
     ]]}
 
+
 def fmt_user(u):
     name = html.escape((u["first_name"] or "") + (" " + u["last_name"] if u["last_name"] else "") or u["username"] or str(u["user_id"]))
     un = f"@{html.escape(u['username'])}" if u["username"] else "no username"
     return f"<b>{name}</b> ({un})\n🆔 <code>{u['user_id']}</code>"
+
 
 async def send_withdrawal_admin(wid):
     conn = db()
@@ -628,12 +982,16 @@ async def send_withdrawal_admin(wid):
         if not w: return
         u = conn.execute("SELECT * FROM users WHERE user_id=?", (w["user_id"],)).fetchone()
         if not u: return
-        refs_total = int(conn.execute("SELECT COUNT(*) c FROM users WHERE referred_by=?", (u["user_id"],)).fetchone()["c"])
-        refs_paid = int(conn.execute("SELECT COUNT(*) c FROM users WHERE referred_by=? AND referral_paid=1", (u["user_id"],)).fetchone()["c"])
+        refs_total = int(conn.execute("SELECT COUNT(*) AS c FROM users WHERE referred_by=?", (u["user_id"],)).fetchone()["c"])
+        refs_paid = int(conn.execute("SELECT COUNT(*) AS c FROM users WHERE referred_by=? AND referral_paid=1", (u["user_id"],)).fetchone()["c"])
         multi_count = 0
         if u["device_hash"]:
-            multi_count = int(conn.execute("SELECT COUNT(DISTINCT user_id) c FROM users WHERE device_hash=? AND user_id!=?", (u["device_hash"], u["user_id"])).fetchone()["c"])
-    finally: conn.close()
+            multi_count = int(conn.execute(
+                "SELECT COUNT(DISTINCT user_id) AS c FROM users WHERE device_hash=? AND user_id!=?",
+                (u["device_hash"], u["user_id"]),
+            ).fetchone()["c"])
+    finally:
+        conn.close()
     risk = "🟢 Normal"
     if u["multi_flag"] or multi_count >= 3: risk = "🔴 HIGH RISK"
     elif (u["risk_score"] or 0) >= 30: risk = "🟡 Review Needed"
@@ -661,13 +1019,18 @@ async def send_withdrawal_admin(wid):
     )
     await send_admin(text, wd_kb(wid))
 
+
 async def send_submission_admin(sid):
     conn = db()
     try:
-        s = conn.execute("SELECT ts.*, t.title, t.reward FROM task_submissions ts JOIN tasks t ON t.id=ts.task_id WHERE ts.id=?", (sid,)).fetchone()
+        s = conn.execute(
+            "SELECT ts.*, t.title, t.reward FROM task_submissions ts JOIN tasks t ON t.id=ts.task_id WHERE ts.id=?",
+            (sid,),
+        ).fetchone()
         if not s: return
         u = conn.execute("SELECT * FROM users WHERE user_id=?", (s["user_id"],)).fetchone()
-    finally: conn.close()
+    finally:
+        conn.close()
     if not s or not u: return
     cap = (
         f"📋 <b>TASK SUBMISSION #{sid}</b>\n\n"
@@ -680,6 +1043,7 @@ async def send_submission_admin(sid):
         await send_admin_photo(s["proof_image"], cap, sub_kb(sid))
     else:
         await send_admin(cap, sub_kb(sid))
+
 
 async def user_audit(cid, tid):
     u = get_user(tid)
@@ -705,16 +1069,16 @@ async def user_audit(cid, tid):
     )
     await send(cid, text)
 
-# ═══════════════════════════════════════════════════════════════
-# ADMIN PANEL — 6 BUTTONS
-# ═══════════════════════════════════════════════════════════════
+
+# ═══ ADMIN PANEL ═══
 def admin_kb():
     conn = db()
     try:
-        pw = conn.execute("SELECT COUNT(*) c FROM withdrawals WHERE status='pending'").fetchone()["c"]
-        pt = conn.execute("SELECT COUNT(*) c FROM task_submissions WHERE status='pending'").fetchone()["c"]
-        ta = conn.execute("SELECT COUNT(*) c FROM tasks WHERE active=1").fetchone()["c"]
-    finally: conn.close()
+        pw = int(conn.execute("SELECT COUNT(*) AS c FROM withdrawals WHERE status='pending'").fetchone()["c"])
+        pt = int(conn.execute("SELECT COUNT(*) AS c FROM task_submissions WHERE status='pending'").fetchone()["c"])
+        ta = int(conn.execute("SELECT COUNT(*) AS c FROM tasks WHERE active=1").fetchone()["c"])
+    finally:
+        conn.close()
     return {"inline_keyboard": [
         [{"text": f"💸 Withdrawals ({pw})", "callback_data": "adm_wd"},
          {"text": f"📋 Task Proofs ({pt})", "callback_data": "adm_tasks"}],
@@ -725,19 +1089,21 @@ def admin_kb():
          {"text": "🔄 Refresh", "callback_data": "adm_refresh"}],
     ]}
 
+
 async def admin_dash(cid):
     conn = db()
     try:
-        users = conn.execute("SELECT COUNT(*) c FROM users").fetchone()["c"]
-        verified = conn.execute("SELECT COUNT(*) c FROM users WHERE verified=1").fetchone()["c"]
-        banned = conn.execute("SELECT COUNT(*) c FROM users WHERE banned=1").fetchone()["c"]
-        multi = conn.execute("SELECT COUNT(*) c FROM users WHERE multi_flag=1").fetchone()["c"]
-        tb = conn.execute("SELECT COALESCE(SUM(balance),0) s FROM users").fetchone()["s"]
-        te = conn.execute("SELECT COALESCE(SUM(total_earned),0) s FROM users").fetchone()["s"]
-        tw = conn.execute("SELECT COALESCE(SUM(total_withdrawn),0) s FROM users").fetchone()["s"]
-        pw = conn.execute("SELECT COUNT(*) c FROM withdrawals WHERE status='pending'").fetchone()["c"]
-        pt = conn.execute("SELECT COUNT(*) c FROM task_submissions WHERE status='pending'").fetchone()["c"]
-    finally: conn.close()
+        users = int(conn.execute("SELECT COUNT(*) AS c FROM users").fetchone()["c"])
+        verified = int(conn.execute("SELECT COUNT(*) AS c FROM users WHERE verified=1").fetchone()["c"])
+        banned = int(conn.execute("SELECT COUNT(*) AS c FROM users WHERE banned=1").fetchone()["c"])
+        multi = int(conn.execute("SELECT COUNT(*) AS c FROM users WHERE multi_flag=1").fetchone()["c"])
+        tb = float(conn.execute("SELECT COALESCE(SUM(balance),0) AS s FROM users").fetchone()["s"])
+        te = float(conn.execute("SELECT COALESCE(SUM(total_earned),0) AS s FROM users").fetchone()["s"])
+        tw = float(conn.execute("SELECT COALESCE(SUM(total_withdrawn),0) AS s FROM users").fetchone()["s"])
+        pw = int(conn.execute("SELECT COUNT(*) AS c FROM withdrawals WHERE status='pending'").fetchone()["c"])
+        pt = int(conn.execute("SELECT COUNT(*) AS c FROM task_submissions WHERE status='pending'").fetchone()["c"])
+    finally:
+        conn.close()
     ref_rate = get_setting("referral_reward", DEFAULT_REFERRAL, kind=float)
     day_rate = get_setting("daily_reward", DEFAULT_DAILY, kind=float)
     min_wd = get_setting("minimum_withdrawal", DEFAULT_MIN_WITHDRAW, kind=float)
@@ -758,9 +1124,8 @@ async def admin_dash(cid):
         "👇 <b>Select an option below</b>",
         admin_kb())
 
-# ═══════════════════════════════════════════════════════════════
-# Bot Handlers
-# ═══════════════════════════════════════════════════════════════
+
+# ═══ BOT HANDLERS ═══
 async def handle_message(msg):
     chat = msg.get("chat", {}); user = msg.get("from", {})
     cid = chat.get("id"); uid = user.get("id")
@@ -778,7 +1143,7 @@ async def handle_message(msg):
     if photo and caption:
         await handle_photo_proof(uid, cid, caption, photo[-1]["file_id"]); return
     if photo and not caption:
-        await send(cid, "⚠️ <b>Caption required</b>\n\nSend your screenshot with the task code in caption.\n\nExample: <code>#T5</code>"); return
+        await send(cid, "⚠️ <b>Caption required</b>\n\nSend screenshot with task code in caption.\nExample: <code>#T5</code>"); return
 
     if text.startswith("/start"):
         await send(cid, WELCOME_MSG); return
@@ -789,7 +1154,7 @@ async def handle_message(msg):
     if text == "/help":
         await send(cid,
             "⚡ <b>Mega Spark Help</b>\n\n"
-            "1. Tap the Menu button to open the app\n"
+            "1. Tap Menu button to open the app\n"
             "2. Complete CAPTCHA\n"
             "3. Join required channels\n"
             "4. Earn rewards\n"
@@ -802,7 +1167,6 @@ async def handle_message(msg):
         await send(cid, "Send /start or tap the Menu button to begin 🚀")
         return
 
-    # ─── ADMIN COMMANDS ───
     if text.startswith("/admin") or text.startswith("/stats") or text == "/panel":
         await admin_dash(cid); return
 
@@ -833,7 +1197,8 @@ async def handle_message(msg):
         if not get_user(tid): await send(cid, "User not found"); return
         conn = db()
         try:
-            conn.execute("UPDATE users SET is_test=1 WHERE user_id=?", (tid,)); conn.commit()
+            conn.execute("UPDATE users SET is_test=1 WHERE user_id=?", (tid,))
+            conn.commit()
         finally: conn.close()
         if amt > 0: credit(tid, amt, "admin", f"TEST by {uid}", admin_id=uid)
         elif amt < 0: debit(tid, abs(amt), "admin", f"TEST deduct by {uid}", admin_id=uid)
@@ -846,7 +1211,8 @@ async def handle_message(msg):
         tid = int(p[1]); reason = " ".join(p[2:]) or "Policy violation"
         conn = db()
         try:
-            conn.execute("UPDATE users SET banned=1, ban_reason=?, updated_at=? WHERE user_id=?", (reason, int(time.time()), tid)); conn.commit()
+            conn.execute("UPDATE users SET banned=1, ban_reason=?, updated_at=? WHERE user_id=?", (reason, int(time.time()), tid))
+            conn.commit()
         finally: conn.close()
         log_admin(uid, "ban", tid, "", reason)
         await send(cid, f"🚫 User {tid} banned")
@@ -859,7 +1225,8 @@ async def handle_message(msg):
         if len(p) != 2 or not p[1].isdigit(): await send(cid, "Usage: /unban USER_ID"); return
         conn = db()
         try:
-            conn.execute("UPDATE users SET banned=0, ban_reason='', updated_at=? WHERE user_id=?", (int(time.time()), int(p[1]))); conn.commit()
+            conn.execute("UPDATE users SET banned=0, ban_reason='', updated_at=? WHERE user_id=?", (int(time.time()), int(p[1])))
+            conn.commit()
         finally: conn.close()
         log_admin(uid, "unban", p[1])
         await send(cid, "✅ User unbanned"); return
@@ -904,38 +1271,42 @@ async def handle_message(msg):
         parts = [x.strip() for x in text.split("|", 2)]
         if len(parts) != 3: await send(cid, "Usage: /addchannel @user | Name | URL"); return
         first = parts[0].replace("/addchannel","").strip()
-        if not first.startswith("@"): first = "@"+first
+        if not first.startswith("@"): first = "@" + first
         conn = db()
         try:
-            mx = conn.execute("SELECT COALESCE(MAX(sort_order),0) m FROM required_channels").fetchone()["m"]
-            conn.execute("INSERT INTO required_channels(username,name,url,active,sort_order,created_at,updated_at) VALUES(?,?,?,?,?,?,?)",
-                         (first, parts[1], parts[2], 1, int(mx)+1, int(time.time()), int(time.time())))
+            mx = int(conn.execute("SELECT COALESCE(MAX(sort_order),0) AS m FROM required_channels").fetchone()["m"])
+            conn.execute(
+                "INSERT INTO required_channels(username,name,url,active,sort_order,created_at,updated_at) VALUES(?,?,?,?,?,?,?) ON CONFLICT (username) DO NOTHING",
+                (first, parts[1], parts[2], 1, mx + 1, int(time.time()), int(time.time())),
+            )
             conn.commit()
-        except sqlite3.IntegrityError:
-            await send(cid, "❌ Channel already exists"); return
+        except Exception:
+            await send(cid, "❌ Already exists"); return
         finally: conn.close()
         await send(cid, f"✅ Channel added: {first}"); return
 
     if text.startswith("/removechannel"):
         p = text.split()
         if len(p) != 2: await send(cid, "Usage: /removechannel @user"); return
-        u = p[1] if p[1].startswith("@") else "@"+p[1]
+        u = p[1] if p[1].startswith("@") else "@" + p[1]
         conn = db()
         try:
-            cur = conn.execute("DELETE FROM required_channels WHERE username=?", (u,)); conn.commit()
+            conn.execute("DELETE FROM required_channels WHERE username=?", (u,))
+            conn.commit()
         finally: conn.close()
-        await send(cid, "✅ Removed" if cur.rowcount else "❌ Not found"); return
+        await send(cid, "✅ Removed"); return
 
     if text.startswith("/togglechannel"):
         p = text.split()
         if len(p) != 2: await send(cid, "Usage: /togglechannel @user"); return
-        u = p[1] if p[1].startswith("@") else "@"+p[1]
+        u = p[1] if p[1].startswith("@") else "@" + p[1]
         conn = db()
         try:
             r = conn.execute("SELECT active FROM required_channels WHERE username=?", (u,)).fetchone()
             if not r: await send(cid, "❌ Not found"); return
             n = 0 if r["active"] else 1
-            conn.execute("UPDATE required_channels SET active=?, updated_at=? WHERE username=?", (n, int(time.time()), u)); conn.commit()
+            conn.execute("UPDATE required_channels SET active=?, updated_at=? WHERE username=?", (n, int(time.time()), u))
+            conn.commit()
         finally: conn.close()
         await send(cid, f"✅ Now {'active' if n else 'inactive'}"); return
 
@@ -943,15 +1314,16 @@ async def handle_message(msg):
         parts = [x.strip() for x in text.split("|", 3)]
         if len(parts) != 4: await send(cid, "Usage: /editchannel @old | @new | Name | URL"); return
         old = parts[0].replace("/editchannel","").strip()
-        if not old.startswith("@"): old = "@"+old
+        if not old.startswith("@"): old = "@" + old
         new, name, url = parts[1], parts[2], parts[3]
-        if not new.startswith("@"): new = "@"+new
+        if not new.startswith("@"): new = "@" + new
         conn = db()
         try:
-            cur = conn.execute("UPDATE required_channels SET username=?, name=?, url=?, updated_at=? WHERE username=?",
-                               (new, name, url, int(time.time()), old)); conn.commit()
+            conn.execute("UPDATE required_channels SET username=?, name=?, url=?, updated_at=? WHERE username=?",
+                         (new, name, url, int(time.time()), old))
+            conn.commit()
         finally: conn.close()
-        await send(cid, "✅ Updated" if cur.rowcount else "❌ Not found"); return
+        await send(cid, "✅ Updated"); return
 
     if text.startswith("/addtask"):
         parts = text.replace("/addtask","",1).strip().split("|")
@@ -960,10 +1332,14 @@ async def handle_message(msg):
         except: await send(cid, "Invalid reward"); return
         conn = db()
         try:
-            cur = conn.execute("INSERT INTO tasks(title,description,reward,url,proof_type,active,created_at,created_by) VALUES(?,?,?,?,?,1,?,?)",
-                               (parts[0].strip(), parts[1].strip(), rw, parts[3].strip(), "photo", int(time.time()), uid))
-            conn.commit(); tid = cur.lastrowid
-        finally: conn.close()
+            cur = conn.execute(
+                "INSERT INTO tasks(title,description,reward,url,proof_type,active,created_at,created_by) VALUES(?,?,?,?,?,1,?,?) RETURNING id",
+                (parts[0].strip(), parts[1].strip(), rw, parts[3].strip(), "photo", int(time.time()), uid),
+            )
+            tid = int(cur.fetchone()["id"])
+            conn.commit()
+        finally:
+            conn.close()
         log_admin(uid, "addtask", tid)
         await send(cid, f"✅ <b>Task #{tid} created</b>\n\nUsers will send screenshot with caption <code>#T{tid}</code>")
         return
@@ -973,7 +1349,8 @@ async def handle_message(msg):
         if len(p) != 2 or not p[1].isdigit(): await send(cid, "Usage: /deltask TASK_ID"); return
         conn = db()
         try:
-            conn.execute("UPDATE tasks SET active=0 WHERE id=?", (int(p[1]),)); conn.commit()
+            conn.execute("UPDATE tasks SET active=0 WHERE id=?", (int(p[1]),))
+            conn.commit()
         finally: conn.close()
         log_admin(uid, "deltask", p[1])
         await send(cid, f"✅ Task #{p[1]} disabled"); return
@@ -992,7 +1369,8 @@ async def handle_message(msg):
         conn = db()
         try:
             wds = conn.execute("SELECT id FROM withdrawals WHERE status='pending' ORDER BY id ASC LIMIT 20").fetchall()
-        finally: conn.close()
+        finally:
+            conn.close()
         if not wds: await send(cid, "✅ No pending withdrawals"); return
         await send(cid, f"💸 <b>{len(wds)} pending withdrawals</b>")
         for w in wds:
@@ -1007,15 +1385,17 @@ async def handle_message(msg):
 
     await send(cid, "Unknown command. Send /admin")
 
+
 async def handle_photo_proof(uid, cid, caption, photo_id):
     m = re.search(r"#T(\d+)", caption)
     if not m:
-        await send(cid, "⚠️ <b>Task code missing</b>\n\nCaption should include the task ID.\nExample: <code>#T5</code>"); return
+        await send(cid, "⚠️ <b>Task code missing</b>\n\nCaption should include task ID.\nExample: <code>#T5</code>"); return
     tid = int(m.group(1))
     conn = db()
     try:
         t = conn.execute("SELECT * FROM tasks WHERE id=? AND active=1", (tid,)).fetchone()
-    finally: conn.close()
+    finally:
+        conn.close()
     if not t: await send(cid, "❌ Task not found"); return
     u = get_user(uid)
     if not u or not u["verified"]:
@@ -1026,20 +1406,22 @@ async def handle_photo_proof(uid, cid, caption, photo_id):
     await send(cid, f"✅ <b>Proof submitted!</b>\n\nTask: {html.escape(t['title'])}\nReward: {t['reward']:.2f} ETB\n\nYou'll be notified after admin review.")
     await send_submission_admin(res["submission_id"])
 
+
 async def edit_cb(q, text, kb=None):
     d = {"chat_id": q["message"]["chat"]["id"], "message_id": q["message"]["message_id"], "text": text, "parse_mode": "HTML"}
     if kb is not None: d["reply_markup"] = kb
     return await tg("editMessageText", d)
 
+
 async def answer_cb(cid, text="", alert=False):
     return await tg("answerCallbackQuery", {"callback_query_id": cid, "text": text, "show_alert": alert})
+
 
 async def handle_callback(q):
     data = q.get("data", "")
     aid = int(q["from"]["id"])
     if not is_admin(aid): await answer_cb(q["id"], "Not authorized", True); return
 
-    # ═══ ADMIN PANEL BUTTONS ═══
     if data == "adm_refresh" or data == "adm_stats":
         await answer_cb(q["id"], "Refreshing...")
         try: await tg("deleteMessage", {"chat_id": q["message"]["chat"]["id"], "message_id": q["message"]["message_id"]})
@@ -1051,7 +1433,8 @@ async def handle_callback(q):
         conn = db()
         try:
             wds = conn.execute("SELECT id FROM withdrawals WHERE status='pending' ORDER BY id ASC").fetchall()
-        finally: conn.close()
+        finally:
+            conn.close()
         if not wds:
             await send(aid, "✅ <b>No pending withdrawals</b>"); return
         await send(aid, f"💸 <b>{len(wds)} pending withdrawal(s)</b> — loading each")
@@ -1065,7 +1448,8 @@ async def handle_callback(q):
         conn = db()
         try:
             subs = conn.execute("SELECT id FROM task_submissions WHERE status='pending' ORDER BY id ASC").fetchall()
-        finally: conn.close()
+        finally:
+            conn.close()
         if not subs:
             await send(aid, "✅ <b>No pending task proofs</b>"); return
         await send(aid, f"📋 <b>{len(subs)} pending task proof(s)</b> — loading each")
@@ -1107,9 +1491,9 @@ async def handle_callback(q):
             "<code>/addtask Title | Description | Reward | URL</code>\n\n"
             "<b>Example:</b>\n"
             "<code>/addtask Join Channel | Join our new channel | 2 | https://t.me/example</code>\n\n"
-            "✅ The task will appear in the app immediately.\n"
-            "👥 Users will send screenshot with caption <code>#T</code> + task ID.\n\n"
-            "<b>To remove a task:</b>\n<code>/deltask TASK_ID</code>",
+            "✅ Task appears in the app immediately.\n"
+            "👥 Users send screenshot with caption <code>#T</code> + task ID.\n\n"
+            "<b>To remove:</b>\n<code>/deltask TASK_ID</code>",
             {"inline_keyboard": [
                 [{"text": "📋 All Tasks", "callback_data": "adm_tasks_list"}],
                 [{"text": "⬅️ Back", "callback_data": "adm_stats"}],
@@ -1125,16 +1509,11 @@ async def handle_callback(q):
             [{"text": "⬅️ Back", "callback_data": "adm_stats"}],
         ]}
         if not ts:
-            await send(aid, "📋 <b>No tasks yet</b>\n\nUse <code>/addtask</code> to create one.", kb)
-            return
+            await send(aid, "📋 <b>No tasks yet</b>\n\nUse <code>/addtask</code> to create one.", kb); return
         lines = [f"📋 <b>All Tasks</b> ({len(ts)})\n"]
         for t in ts:
             st = "✅" if t["active"] else "❌"
-            lines.append(
-                f"{st} <b>#{t['id']}</b> {html.escape(t['title'])}\n"
-                f"💰 {t['reward']:.2f} ETB\n"
-                f"🔗 {html.escape(t['url'] or 'no url')}"
-            )
+            lines.append(f"{st} <b>#{t['id']}</b> {html.escape(t['title'])}\n💰 {t['reward']:.2f} ETB\n🔗 {html.escape(t['url'] or 'no url')}")
         lines.append("\n<b>Commands:</b>\n<code>/deltask ID</code> — disable\n<code>/addtask Title | Desc | Reward | URL</code>")
         await send(aid, "\n".join(lines), kb); return
 
@@ -1145,9 +1524,10 @@ async def handle_callback(q):
             us = conn.execute(
                 "SELECT user_id,username,first_name,balance,verified,banned,risk_score FROM users ORDER BY updated_at DESC LIMIT 30"
             ).fetchall()
-            total = conn.execute("SELECT COUNT(*) c FROM users").fetchone()["c"]
-        finally: conn.close()
-        lines = [f"👥 <b>Users</b> ({total} total, showing last 30)\n"]
+            total = int(conn.execute("SELECT COUNT(*) AS c FROM users").fetchone()["c"])
+        finally:
+            conn.close()
+        lines = [f"👥 <b>Users</b> ({total} total, last 30)\n"]
         for u in us:
             nm = html.escape(((u["first_name"] or "") + " " + (u["username"] or "")).strip() or "—")
             st = "✅" if u["verified"] else "⏳"
@@ -1164,7 +1544,8 @@ async def handle_callback(q):
             flagged = conn.execute(
                 "SELECT user_id,username,first_name,risk_score,risk_flags,multi_flag FROM users WHERE risk_score>=30 ORDER BY risk_score DESC LIMIT 20"
             ).fetchall()
-        finally: conn.close()
+        finally:
+            conn.close()
         kb = {"inline_keyboard": [[{"text": "⬅️ Back", "callback_data": "adm_stats"}]]}
         if not flagged:
             await send(aid, "✅ <b>No risky users</b>", kb); return
@@ -1185,7 +1566,6 @@ async def handle_callback(q):
         await send(aid, f"🔧 Maintenance mode: {'🛑 ON' if new else '✅ OFF'}", kb)
         return
 
-    # ═══ WITHDRAWAL REFERRALS ═══
     if data.startswith("wdrefs:"):
         _, wid_s, page_s = data.split(":", 2)
         wid = int(wid_s); page = int(page_s)
@@ -1193,11 +1573,14 @@ async def handle_callback(q):
         try:
             w = conn.execute("SELECT user_id FROM withdrawals WHERE id=?", (wid,)).fetchone()
             if not w: await answer_cb(q["id"], "Not found", True); return
-            refs = conn.execute("SELECT user_id, username, first_name, last_name, referral_paid, created_at FROM users WHERE referred_by=? ORDER BY user_id DESC",
-                                (w["user_id"],)).fetchall()
-        finally: conn.close()
-        per = 40; start = page*per; chunk = refs[start:start+per]
-        total_pages = max(1, (len(refs)+per-1)//per)
+            refs = conn.execute(
+                "SELECT user_id, username, first_name, last_name, referral_paid, created_at FROM users WHERE referred_by=? ORDER BY user_id DESC",
+                (w["user_id"],),
+            ).fetchall()
+        finally:
+            conn.close()
+        per = 40; start = page * per; chunk = refs[start:start + per]
+        total_pages = max(1, (len(refs) + per - 1) // per)
         if not chunk: await answer_cb(q["id"], "No referrals"); return
         lines = [f"👥 <b>Referrals — page {page+1}/{total_pages}</b> ({len(refs)} total)\n"]
         for r in chunk:
@@ -1208,7 +1591,7 @@ async def handle_callback(q):
             lines.append(f"{pd} {nm} {un}\n<code>{r['user_id']}</code> • {dt}")
         nav = []
         if page > 0: nav.append({"text": "⬅️ Prev", "callback_data": f"wdrefs:{wid}:{page-1}"})
-        if page+1 < total_pages: nav.append({"text": "Next ➡️", "callback_data": f"wdrefs:{wid}:{page+1}"})
+        if page + 1 < total_pages: nav.append({"text": "Next ➡️", "callback_data": f"wdrefs:{wid}:{page+1}"})
         kb = {"inline_keyboard": [nav]} if nav else None
         await send(aid, "\n".join(lines), kb)
         await answer_cb(q["id"], f"Page {page+1}"); return
@@ -1218,11 +1601,12 @@ async def handle_callback(q):
         conn = db()
         try:
             w = conn.execute("SELECT user_id FROM withdrawals WHERE id=?", (wid,)).fetchone()
-        finally: conn.close()
+        finally:
+            conn.close()
         if w: await user_audit(aid, int(w["user_id"]))
         await answer_cb(q["id"], "Sent"); return
 
-    if data.startswith(("wdok:","wdno:","wdban:")):
+    if data.startswith(("wdok:", "wdno:", "wdban:")):
         action, wid_s = data.split(":", 1); wid = int(wid_s)
         if action == "wdok":
             ok, w = approve_withdrawal(wid, aid)
@@ -1243,13 +1627,16 @@ async def handle_callback(q):
             try:
                 w = conn.execute("SELECT user_id FROM withdrawals WHERE id=?", (wid,)).fetchone()
                 if w:
-                    conn.execute("UPDATE users SET banned=1, ban_reason='Withdrawal fraud', updated_at=? WHERE user_id=?", (int(time.time()), w["user_id"])); conn.commit()
-            finally: conn.close()
+                    conn.execute("UPDATE users SET banned=1, ban_reason='Withdrawal fraud', updated_at=? WHERE user_id=?",
+                                 (int(time.time()), w["user_id"]))
+                    conn.commit()
+            finally:
+                conn.close()
             await answer_cb(q["id"], "🚫 Banned")
             await edit_cb(q, f"🚫 <b>Withdrawal #{wid}</b> — User banned")
         return
 
-    if data.startswith(("tskok:","tskno:")):
+    if data.startswith(("tskok:", "tskno:")):
         action, sid_s = data.split(":", 1); sid = int(sid_s)
         if action == "tskok":
             ok, s = approve_task_submission(sid, aid)
@@ -1265,9 +1652,16 @@ async def handle_callback(q):
         return
     await answer_cb(q["id"])
 
+
 # ═══ FASTAPI ═══
 app = FastAPI(title="Mega Spark")
-init_db()
+
+try:
+    init_db()
+    print("[init_db] OK")
+except Exception as e:
+    print(f"[init_db error] {e}")
+
 
 def validate_init_data(d):
     if not d or not BOT_TOKEN: return None
@@ -1278,45 +1672,52 @@ def validate_init_data(d):
         s = "\n".join(f"{k}={p[k]}" for k in sorted(p.keys()))
         sk = hmac.new(b"WebAppData", BOT_TOKEN.encode(), hashlib.sha256).digest()
         if not hmac.compare_digest(hmac.new(sk, s.encode(), hashlib.sha256).hexdigest(), h): return None
-        if int(p.get("auth_date","0")) < time.time() - 86400: return None
-        u = json.loads(p.get("user","{}"))
+        if int(p.get("auth_date", "0")) < time.time() - 86400: return None
+        u = json.loads(p.get("user", "{}"))
         if not u.get("id"): return None
         return u
     except: return None
 
+
 async def require_user(request: Request):
-    u = validate_init_data(request.headers.get("X-Telegram-Init-Data",""))
-    if not u: return None, None, JSONResponse({"error":"telegram_required"}, status_code=401)
+    u = validate_init_data(request.headers.get("X-Telegram-Init-Data", ""))
+    if not u: return None, None, JSONResponse({"error": "telegram_required"}, status_code=401)
     uid = int(u["id"])
-    if is_banned(uid): return None, None, JSONResponse({"error":"banned"}, status_code=403)
-    if get_setting("maintenance_mode","0",kind=str) == "1" and not is_admin(uid):
-        return None, None, JSONResponse({"error":"maintenance"}, status_code=503)
-    ensure_user(uid, u.get("username",""), u.get("first_name",""), u.get("last_name",""))
+    if is_banned(uid): return None, None, JSONResponse({"error": "banned"}, status_code=403)
+    if get_setting("maintenance_mode", "0", kind=str) == "1" and not is_admin(uid):
+        return None, None, JSONResponse({"error": "maintenance"}, status_code=503)
+    ensure_user(uid, u.get("username", ""), u.get("first_name", ""), u.get("last_name", ""))
     ip_h = ""
     try:
-        fwd = request.headers.get("x-forwarded-for","")
+        fwd = request.headers.get("x-forwarded-for", "")
         rip = fwd.split(",")[0].strip() if fwd else (request.client.host if request.client else "")
         if rip: ip_h = hashlib.sha256(rip.encode()).hexdigest()[:16]
     except: pass
-    x_device_id = request.headers.get("X-Device-Id","")
+    x_device_id = request.headers.get("X-Device-Id", "")
     dev_h = hashlib.sha256(x_device_id.encode()).hexdigest()[:16] if x_device_id else ""
     conn = db()
     try:
         cur = conn.execute("SELECT device_hash FROM users WHERE user_id=?", (uid,)).fetchone()
         if cur and not cur["device_hash"] and dev_h:
-            conn.execute("UPDATE users SET device_hash=?, ip_hash=? WHERE user_id=?", (dev_h, ip_h, uid)); conn.commit()
+            conn.execute("UPDATE users SET device_hash=?, ip_hash=? WHERE user_id=?", (dev_h, ip_h, uid))
+            conn.commit()
         elif cur and dev_h:
             conn.execute("UPDATE users SET device_hash=?, ip_hash=?, last_active=? WHERE user_id=?",
-                         (dev_h, ip_h, int(time.time()), uid)); conn.commit()
-    finally: conn.close()
+                         (dev_h, ip_h, int(time.time()), uid))
+            conn.commit()
+    finally:
+        conn.close()
     return u, uid, None
+
 
 @app.get("/", response_class=HTMLResponse)
 @app.get("/app", response_class=HTMLResponse)
 async def mini_app(): return HTMLResponse(MINI_APP_HTML)
 
+
 @app.get("/health")
-async def health(): return {"status":"ok","service":"mega-spark"}
+async def health(): return {"status": "ok", "service": "mega-spark"}
+
 
 @app.post("/api/me")
 async def api_me(request: Request):
@@ -1339,14 +1740,16 @@ async def api_me(request: Request):
             "payment_day": is_payment_day(),
         },
         "daily_status": daily_status(uid),
-        "services": [{"icon":s[0],"title":s[1],"desc":s[2]} for s in SERVICES],
+        "services": [{"icon": s[0], "title": s[1], "desc": s[2]} for s in SERVICES],
     }
+
 
 @app.get("/api/channels")
 async def api_channels(request: Request):
     u, uid, err = await require_user(request)
     if err: return err
-    return {"channels":[{"id":c["id"],"username":c["username"],"name":c["name"],"url":c["url"]} for c in get_channels(active_only=True)]}
+    return {"channels": [{"id": c["id"], "username": c["username"], "name": c["name"], "url": c["url"]} for c in get_channels(active_only=True)]}
+
 
 @app.get("/api/channel-status")
 async def api_channel_status(request: Request):
@@ -1355,12 +1758,14 @@ async def api_channel_status(request: Request):
     all_joined, results = await check_all_channels_parallel(uid)
     return {"channels": results, "all_joined": all_joined}
 
+
 @app.post("/api/captcha")
 async def api_captcha(request: Request):
     u, uid, err = await require_user(request)
     if err: return err
     t, q = make_captcha(uid)
-    return {"token":t,"question":q}
+    return {"token": t, "question": q}
+
 
 @app.post("/api/captcha/verify")
 async def api_captcha_verify(request: Request, payload: dict = Body(...)):
@@ -1368,38 +1773,43 @@ async def api_captcha_verify(request: Request, payload: dict = Body(...)):
     if err: return err
     ok, msg, new_t, new_q = verify_captcha((payload.get("token") or "").strip(), str(payload.get("answer") or "").strip())
     if not ok:
-        return JSONResponse({"ok":False,"error":msg,"token":new_t,"question":new_q}, status_code=400)
+        return JSONResponse({"ok": False, "error": msg, "token": new_t, "question": new_q}, status_code=400)
     return {"ok": True}
+
 
 @app.post("/api/verify")
 async def api_verify(request: Request):
     u, uid, err = await require_user(request)
     if err: return err
     row = get_user(uid)
-    if not row["captcha_passed"]: return JSONResponse({"ok":False,"error":"captcha_required"}, status_code=400)
+    if not row["captcha_passed"]: return JSONResponse({"ok": False, "error": "captcha_required"}, status_code=400)
     all_ok, results = await check_all_channels_parallel(uid)
     if not all_ok:
-        return {"ok":False,"verified":False,"channels":results}
+        return {"ok": False, "verified": False, "channels": results}
     conn = db()
     try:
         was = bool(row["verified"])
-        conn.execute("UPDATE users SET verified=1, updated_at=? WHERE user_id=?", (int(time.time()), uid)); conn.commit()
-    finally: conn.close()
+        conn.execute("UPDATE users SET verified=1, updated_at=? WHERE user_id=?", (int(time.time()), uid))
+        conn.commit()
+    finally:
+        conn.close()
     if not was:
         reward, block = pay_referral_if_eligible(uid)
         if block and block.get("multi"):
-            try: await send_admin(f"🚨 <b>Multi-Account Detected</b>\n\nUser: <code>{uid}</code>\nReferrer: <code>{block['referrer']}</code>\nReason: {block['reason']}")
+            try: await send_admin(f"🚨 <b>Multi-Account Detected</b>\n\nUser: <code>{uid}</code>\nReferrer: <code>{block['referrer']}</code>")
             except: pass
         if reward:
             try: await send(int(get_user(uid)["referred_by"]), f"👥 <b>Referral Reward</b>\n\n+{reward:.2f} ETB credited!")
             except: pass
-    return {"ok":True,"verified":True,"channels":results}
+    return {"ok": True, "verified": True, "channels": results}
+
 
 @app.get("/api/tasks")
 async def api_tasks(request: Request):
     u, uid, err = await require_user(request)
     if err: return err
-    return {"tasks":[{"id":t["id"],"title":t["title"],"description":t["description"] or "","reward":_r2(t["reward"]),"url":t["url"] or "","status":(get_user_task_status(uid,t["id"])["status"] if get_user_task_status(uid,t["id"]) else None)} for t in get_tasks(active_only=True)]}
+    return {"tasks": [{"id": t["id"], "title": t["title"], "description": t["description"] or "", "reward": _r2(t["reward"]), "url": t["url"] or "", "status": (get_user_task_status(uid, t["id"])["status"] if get_user_task_status(uid, t["id"]) else None)} for t in get_tasks(active_only=True)]}
+
 
 @app.get("/api/referral")
 async def api_ref(request: Request):
@@ -1407,25 +1817,29 @@ async def api_ref(request: Request):
     if err: return err
     conn = db()
     try:
-        total_count = int(conn.execute("SELECT COUNT(*) c FROM users WHERE referred_by=?", (uid,)).fetchone()["c"])
-    finally: conn.close()
-    return {"link":f"https://t.me/{BOT_USERNAME}?start=ref_{uid}","count":get_referral_count(uid),"total":total_count,
-            "reward":get_setting("referral_reward",DEFAULT_REFERRAL,kind=float)}
+        total_count = int(conn.execute("SELECT COUNT(*) AS c FROM users WHERE referred_by=?", (uid,)).fetchone()["c"])
+    finally:
+        conn.close()
+    return {"link": f"https://t.me/{BOT_USERNAME}?start=ref_{uid}", "count": get_referral_count(uid), "total": total_count,
+            "reward": get_setting("referral_reward", DEFAULT_REFERRAL, kind=float)}
+
 
 @app.get("/api/wallet")
 async def api_wallet_get(request: Request):
     u, uid, err = await require_user(request)
     if err: return err
     r = get_user(uid)
-    return {"wallet_type":r["wallet_type"] or "","wallet_number":r["wallet_number"] or "","suspicious":bool(r["wallet_suspicious"])}
+    return {"wallet_type": r["wallet_type"] or "", "wallet_number": r["wallet_number"] or "", "suspicious": bool(r["wallet_suspicious"])}
+
 
 @app.post("/api/wallet")
 async def api_wallet_post(request: Request, payload: dict = Body(...)):
     u, uid, err = await require_user(request)
     if err: return err
-    ok, msg, susp = save_wallet(uid, payload.get("wallet_type",""), payload.get("wallet_number",""))
-    if not ok: return JSONResponse({"ok":False,"error":msg}, status_code=400)
-    return {"ok":True,"message":msg,"suspicious":susp}
+    ok, msg, susp = save_wallet(uid, payload.get("wallet_type", ""), payload.get("wallet_number", ""))
+    if not ok: return JSONResponse({"ok": False, "error": msg}, status_code=400)
+    return {"ok": True, "message": msg, "suspicious": susp}
+
 
 @app.get("/api/daily-status")
 async def api_daily_status(request: Request):
@@ -1433,26 +1847,29 @@ async def api_daily_status(request: Request):
     if err: return err
     return daily_status(uid)
 
+
 @app.post("/api/daily-bonus")
 async def api_daily_bonus(request: Request):
     u, uid, err = await require_user(request)
     if err: return err
     ok, res = claim_daily(uid)
-    if not ok: return JSONResponse({"ok":False,**res}, status_code=400)
-    return {"ok":True,**res}
+    if not ok: return JSONResponse({"ok": False, **res}, status_code=400)
+    return {"ok": True, **res}
+
 
 @app.post("/api/withdraw")
 async def api_withdraw(request: Request, payload: dict = Body(...)):
     u, uid, err = await require_user(request)
     if err: return err
     row = get_user(uid)
-    if not row["verified"]: return JSONResponse({"ok":False,"error":"not_verified"}, status_code=400)
-    if not is_payment_day(): return JSONResponse({"ok":False,"error":"sunday"}, status_code=400)
+    if not row["verified"]: return JSONResponse({"ok": False, "error": "not_verified"}, status_code=400)
+    if not is_payment_day(): return JSONResponse({"ok": False, "error": "sunday"}, status_code=400)
     ok, res = create_withdrawal(uid, float(payload.get("amount") or 0))
-    if not ok: return JSONResponse({"ok":False,"error":res}, status_code=400)
+    if not ok: return JSONResponse({"ok": False, "error": res}, status_code=400)
     try: await send_withdrawal_admin(res["withdrawal_id"])
     except: pass
-    return {"ok":True,**res}
+    return {"ok": True, **res}
+
 
 @app.get("/api/history")
 async def api_history(request: Request):
@@ -1463,32 +1880,37 @@ async def api_history(request: Request):
         wds = conn.execute("SELECT id,amount,wallet_type,status,created_at FROM withdrawals WHERE user_id=? ORDER BY id DESC LIMIT 50", (uid,)).fetchall()
         subs = conn.execute("SELECT ts.id, ts.status, ts.created_at, t.title, t.reward FROM task_submissions ts JOIN tasks t ON t.id=ts.task_id WHERE ts.user_id=? ORDER BY ts.id DESC LIMIT 50", (uid,)).fetchall()
         txs = conn.execute("SELECT type,amount,description,created_at FROM transactions WHERE user_id=? ORDER BY id DESC LIMIT 50", (uid,)).fetchall()
-    finally: conn.close()
-    return {"withdrawals":[dict(w) for w in wds],"submissions":[dict(s) for s in subs],"transactions":[dict(t) for t in txs]}
+    finally:
+        conn.close()
+    return {"withdrawals": [dict(w) for w in wds], "submissions": [dict(s) for s in subs], "transactions": [dict(t) for t in txs]}
+
 
 @app.post("/webhook")
 async def webhook(request: Request):
-    if WEBHOOK_SECRET and request.headers.get("X-Telegram-Bot-Api-Secret-Token","") != WEBHOOK_SECRET:
-        return JSONResponse({"ok":False}, status_code=401)
+    if WEBHOOK_SECRET and request.headers.get("X-Telegram-Bot-Api-Secret-Token", "") != WEBHOOK_SECRET:
+        return JSONResponse({"ok": False}, status_code=401)
     try: up = await request.json()
-    except: return {"ok":True}
-    asyncio.create_task(handle_update(up)); return {"ok":True}
+    except: return {"ok": True}
+    asyncio.create_task(handle_update(up)); return {"ok": True}
+
 
 async def handle_update(up: dict):
     try:
         if "callback_query" in up: await handle_callback(up["callback_query"]); return
         if "message" in up: await handle_message(up["message"]); return
-    except Exception as e: print("err:", e)
+    except Exception as e:
+        print("err:", e)
+
 
 @app.on_event("startup")
 async def on_startup():
     if BOT_TOKEN and WEBHOOK_URL:
-        p = {"url": WEBHOOK_URL, "allowed_updates": ["message","callback_query"]}
+        p = {"url": WEBHOOK_URL, "allowed_updates": ["message", "callback_query"]}
         if WEBHOOK_SECRET: p["secret_token"] = WEBHOOK_SECRET
         r = await tg("setWebhook", p)
         print("setWebhook:", r)
 
-# ═══ MINI APP ═══
+# ═══ MINI APP (unchanged — same as previous) ═══
 MINI_APP_HTML = r"""<!doctype html>
 <html lang="en">
 <head>
@@ -1735,7 +2157,7 @@ let deviceId = localStorage.getItem('ms_fid');
 if (!deviceId) { deviceId = 'd_' + Math.random().toString(36).slice(2) + Date.now(); localStorage.setItem('ms_fid', deviceId); }
 const $ = s => document.querySelector(s);
 const $$ = s => [...document.querySelectorAll(s)];
-let STATE = { me:null, tasks:[], captchaToken:null, channelsChecked:false };
+let STATE = { me:null, tasks:[], captchaToken:null };
 
 async function api(path, opts={}) {
   const r = await fetch(path, {
@@ -1837,7 +2259,6 @@ async function loadChannelStatus(showSpinner){
   const joinedCount = chans.filter(c => c.joined).length;
   const total = chans.length;
   const remaining = total - joinedCount;
-
   if (r.data.all_joined) {
     $('#channelStatus').innerHTML = '<span style="color:var(--green)">✅ All verified!</span>';
     $('#verifyBtn').disabled = false;
@@ -1847,32 +2268,22 @@ async function loadChannelStatus(showSpinner){
     $('#verifyBtn').disabled = false;
     $('#verifyBtn').textContent = '🔄 Verify Membership';
   }
-
   $('#channelsList').innerHTML = chans.map(c => `
     <a class="channel-item ${c.joined ? 'joined' : ''}" href="${esc(c.url)}" target="_blank" rel="noopener">
       <div class="ico">${c.joined ? '✅' : '📢'}</div>
       <div><div class="nm">${esc(c.name)}</div><div class="un">${esc(c.username)}</div></div>
       <div class="go">${c.joined ? '✓ Joined' : 'Join →'}</div>
     </a>`).join('');
-
-  STATE.channelsChecked = true;
 }
-
 document.addEventListener('visibilitychange', () => {
-  if (document.visibilityState === 'visible' && $('#gate-channels').classList.contains('active')) {
-    loadChannelStatus(false);
-  }
+  if (document.visibilityState === 'visible' && $('#gate-channels').classList.contains('active')) loadChannelStatus(false);
 });
 window.addEventListener('focus', () => {
-  if ($('#gate-channels').classList.contains('active')) {
-    loadChannelStatus(false);
-  }
+  if ($('#gate-channels').classList.contains('active')) loadChannelStatus(false);
 });
 if (tg && tg.onEvent) {
   tg.onEvent('activated', () => {
-    if ($('#gate-channels').classList.contains('active')) {
-      loadChannelStatus(false);
-    }
+    if ($('#gate-channels').classList.contains('active')) loadChannelStatus(false);
   });
 }
 
@@ -1886,17 +2297,12 @@ async function loadTasks(){
         <div style="font-size:52px;line-height:1;margin-bottom:8px">📋</div>
         <div style="font-weight:800;font-size:20px;margin-bottom:6px">Tasks Coming Soon</div>
         <div style="color:var(--muted);font-size:13px;line-height:1.6;margin-bottom:18px">
-          Get ready! New paid tasks will be available here very soon.
+          Get ready! New paid tasks will be available very soon.
         </div>
         <div style="text-align:left;background:rgba(0,0,0,.28);border:1px solid var(--line);border-radius:14px;padding:14px">
           <div style="font-size:12px;font-weight:700;color:var(--muted);letter-spacing:1px;margin-bottom:8px">WHAT TO EXPECT</div>
           <div style="font-size:13px;line-height:1.9">
-            🎯 Join Telegram channels<br>
-            👀 Watch short videos<br>
-            ✅ Complete surveys<br>
-            📱 Social media tasks<br>
-            🔗 Website visits<br>
-            📸 Screenshot proofs
+            🎯 Join Telegram channels<br>👀 Watch short videos<br>✅ Complete surveys<br>📱 Social media tasks<br>🔗 Website visits<br>📸 Screenshot proofs
           </div>
         </div>
       </div>`;
@@ -2029,10 +2435,6 @@ function openWithdraw(){
     <div class="warn">⚠️ Multi-account usage = <b>rejection</b>.</div>
     <label class="label">Amount (ETB)</label>
     <input class="input" id="wamount" type="number" step="0.01" value="${Math.max(m.balance, m.settings.minimum_withdrawal).toFixed(2)}">
-    <div class="card" style="margin-top:12px">
-      <div style="display:flex;justify-content:space-between"><span style="color:var(--muted)">Method</span><b>${esc(m.wallet_type)}</b></div>
-      <div style="display:flex;justify-content:space-between;margin-top:6px"><span style="color:var(--muted)">Wallet</span><b>${esc(m.wallet_number)}</b></div>
-    </div>
     <div class="btn-row"><button class="btn dark" data-close>Cancel</button><button class="btn gold" id="doWithdraw">🚀 Request</button></div>`);
   $('#doWithdraw').addEventListener('click', async () => {
     const amount = parseFloat($('#wamount').value || 0);
@@ -2076,7 +2478,7 @@ async function verifyCaptcha(){
     $('#captchaA').value = '';
     $('#captchaA').classList.add('err');
     setTimeout(() => $('#captchaA').classList.remove('err'), 400);
-    toast('❌ Wrong answer — try again');
+    toast('❌ Wrong');
   }
   btn.disabled = false; btn.textContent = '✅ Verify Answer';
 }
@@ -2129,7 +2531,7 @@ $('#servicesBtn')?.addEventListener('click', openServices);
     else { await loadTasks(); showApp(); }
   } catch(e) {
     console.error(e);
-    $('#loading').innerHTML = '<div class="center"><div>Failed to load.</div></div>';
+    $('#loading').innerHTML = '<div class="center"><div>Failed.</div></div>';
   }
 })();
 </script>
