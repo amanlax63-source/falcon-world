@@ -1,0 +1,23 @@
+app = "falcon-world"
+primary_region = "iad"
+
+[build]
+
+[env]
+  PORT = "10000"
+
+[processes]
+  app = "uvicorn server:app --host 0.0.0.0 --port 10000"
+
+[http_service]
+  internal_port = 10000
+  force_https = true
+  auto_stop_machines = false
+  auto_start_machines = true
+  min_machines_running = 1
+  processes = ["app"]
+
+[[vm]]
+  memory = "2gb"
+  cpu_kind = "shared"
+  cpus = 1
